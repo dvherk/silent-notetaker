@@ -116,6 +116,9 @@ The UI shell (markup, styles, engine loaders, the inlined transcription worker) 
 
 Each ES-module engine loader is a thin wrapper that delegates every policy decision to its corresponding wasm surface. Full design notes, the complete network trust boundary, and the roadmap are in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
 
+The current speech and speaker boundaries, including adapter gaps, are described
+in [`docs/speech-engines.md`](docs/speech-engines.md).
+
 ---
 
 ## Models

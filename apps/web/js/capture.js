@@ -180,7 +180,7 @@ export class CaptureGraph {
 
       this.processor = new AudioWorkletNode(this.audioContext, 'capture-processor');
       this.processor.port.onmessage = (e) => {
-        if (!this.isRecording) return;
+        if (!this.isRecording || generation !== this._captureGeneration) return;
         if (onSamples) onSamples(new Float32Array(e.data));
       };
 

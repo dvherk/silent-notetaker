@@ -74,7 +74,7 @@ test('stopping during a microphone permission prompt discards the eventual strea
   assert.equal(graph.isRecording, false);
 });
 
-test('capture delivers samples only while active and supports a later restart', async t => {
+test('capture ignores stale worklet messages across stop and restart', async t => {
   const tracks = [];
   const received = [];
   replaceGlobal(t, 'navigator', {
@@ -111,6 +111,7 @@ test('capture delivers samples only while active and supports a later restart', 
   graph.stop();
   firstProcessor.port.onmessage({ data: [0.75] });
   await graph.startAudioCapture();
+  firstProcessor.port.onmessage({ data: [0.9] });
   graph.processor.port.onmessage({ data: [0.5] });
   graph.stop();
 

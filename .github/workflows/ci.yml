@@ -1,6 +1,6 @@
 # CI: Silent Notetaker — Rust workspace gates
 #
-# Jobs (in dependency order — all run on every PR + push to rust-refactor/main):
+# Jobs run on pull requests to rust-refactor/main and selected push branches:
 #
 #   1. core-gates        — fmt / check / test / clippy -D warnings (workspace)
 #   2. supply-chain      — cargo-deny (licenses/advisories/bans) + cargo-audit
@@ -26,6 +26,7 @@ on:
     branches:
       - rust-refactor
       - main
+      - dvherk-local-core-ci
   pull_request:
     branches:
       - rust-refactor
@@ -55,6 +56,10 @@ jobs:
           node-version: "24"
       - name: Run JavaScript tests
         run: node --test tests/*.test.mjs .evals/MeetingNotesQuality/score-output.test.mjs .rubrics/CanonicalMeetingNotes/verifiers/held-out.test.mjs
+      - name: Exercise capture with a synthetic microphone
+        env:
+          SILENT_BROWSER_BIN: /usr/bin/google-chrome
+        run: node scripts/browser-capture-smoke.mjs
 
   core-gates:
     name: "Core gates (fmt / check / test / clippy)"
@@ -161,7 +166,6 @@ jobs:
   browser-wasm:
     name: "Browser WASM (wasm-pack headless Chrome, vendored ort-web)"
     runs-on: ubuntu-latest
-    needs: core-gates
     defaults:
       run:
         working-directory: crates/nemotron-asr
@@ -187,8 +191,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-wasm-
 
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Install wasm-pack 0.13.1
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/wasm-pack'
+          wasm-pack --version
 
       # --- Vendor ort-web runtime assets ---
       # Cache key = ORT_WEB_VERSION (content-addressed by version tag on cdn.pyke.io).
@@ -326,6 +333,15 @@ jobs:
           wasm-pack test --headless --chrome \
             --chromedriver /tmp/chromedriver-pinned/chromedriver \
             -- --test browser_smoke
+
+      - name: wasm-pack test --headless --chrome (storage browser tests)
+        if: ${{ !cancelled() && steps.resolve-chromedriver.outcome == 'success' }}
+        run: |
+          cd ../silent-storage
+          cp ../nemotron-asr/webdriver.json webdriver.json
+          wasm-pack test --headless --chrome \
+            --chromedriver /tmp/chromedriver-pinned/chromedriver \
+            -- --test browser_idb
 
       - name: Stop vendor server
         if: always()
@@ -489,7 +505,6 @@ jobs:
   reproducible-wasm:
     name: "Reproducible wasm (build twice, publish sha256)"
     runs-on: ubuntu-latest
-    needs: core-gates
 
     steps:
       - uses: actions/checkout@v4

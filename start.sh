@@ -1,7 +1,7 @@
 #!/bin/bash
 # ┌──────────────────────────────────────────┐
 # │  Silent Notetaker — One-Click Launcher   │
-# │  Starts HTTP server + Claude Bridge      │
+# │  Starts the local HTTP server           │
 # └──────────────────────────────────────────┘
 
 set -e
@@ -30,9 +30,8 @@ else
   echo -e "${DIM}   Install: curl -LsSf https://astral.sh/uv/install.sh | sh${NC}"
 fi
 
-# Kill any existing instances on our ports
+# Kill any existing instances on the HTTP port
 lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
-lsof -ti:8765 2>/dev/null | xargs kill 2>/dev/null || true
 
 # Start HTTP server.
 # MUST send cross-origin-isolation headers (COOP/COEP) so the browser exposes
@@ -50,14 +49,10 @@ else
   echo -e "  ${GREEN}✓${NC} HTTP server     → ${GREEN}http://localhost:8080${NC} ${DIM}(Python · cross-origin isolated)${NC}"
 fi
 
-# Start Claude Bridge
-# Auth is handled by bridge.py: `claude` CLI (your subscription) → ANTHROPIC_API_KEY (billed)
+# The cloud bridge is opt-in and is never started by this launcher.
 BRIDGE_PID=""
 if [ "$BRIDGE_AVAILABLE" = true ]; then
-  uv run bridge.py &
-  BRIDGE_PID=$!
-  echo -e "  ${PURPLE}✓${NC} Claude Bridge   → ${PURPLE}ws://localhost:8765${NC}"
-  echo -e "  ${DIM}  Auth: claude CLI (your subscription, no key) → ANTHROPIC_API_KEY (billed)${NC}"
+  echo -e "  ${DIM}Claude Bridge is optional: enable it in Settings and run uv run bridge.py separately.${NC}"
 fi
 
 echo ""

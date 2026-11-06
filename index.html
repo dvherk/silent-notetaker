@@ -1809,7 +1809,7 @@
       <span>IndexedDB: local</span>
     </div>
     <span class="separator">·</span>
-    <span>All data stays in your browser</span>
+    <span id="processingMode">On-device processing</span>
     <span class="separator">·</span>
     <span id="sourcesIndicator" class="sources-indicator">
       <span class="source-badge source-mic" id="sourceMic" style="display:none">Mic</span>
@@ -1840,7 +1840,7 @@
       <button class="btn btn-ghost" onclick="app.bridge.disconnect(); toggleBridgePanel();" style="width:100%;margin-top:8px">Disconnect</button>
     </div>
     <div id="bridgeSetupInfo">
-      <p class="bridge-hint" style="margin-bottom:10px">The Claude Bridge connects this app to Claude for enhanced notes, screenshot analysis, and smarter summaries. Runs locally — your data never leaves your machine.</p>
+      <p class="bridge-hint" style="margin-bottom:10px">The optional Claude Bridge forwards transcript text, notes, and shared-tab screenshots to Claude for cloud processing. Audio is not sent by the bridge. Enable it explicitly in Settings before connecting.</p>
 
       <!-- Step 1: Save bridge.py -->
       <div class="bridge-section-label">Step 1: Save the bridge script</div>
@@ -3693,6 +3693,7 @@ class TranscriptionManager {
       getStorage: () => (typeof storage !== 'undefined' ? storage : null),
       getMeetingId: () => tm.currentMeetingId,
       onSystemAudioEnded: () => { if (tm.onSystemAudioEnded) tm.onSystemAudioEnded(); },
+      shouldCaptureScreenshot: () => loadSettings().screenshots === true,
     });
     return this.capture;
   }
@@ -4632,7 +4633,7 @@ class TranscriptionManager {
     }
   }
 
-  stop() {
+  stop({ finalize = true } = {}) {
     this.isRecording = false;
     // Signal Voxtral's loop to exit. Bumping the run id supersedes the current loop so
     // its isStop() flips true immediately and STAYS true even if a later resume clears
@@ -4670,7 +4671,7 @@ class TranscriptionManager {
     }
     // Nemotron: drain the buffer + decode the trailing < 560ms tail, then promote the last
     // partial sentence. app.stop() awaits this (_nemotronStopPromise) before it summarizes.
-    if (this.engine === 'nemotron' && this.nemotron) {
+    if (finalize && this.engine === 'nemotron' && this.nemotron) {
       this._nemotronStopPromise = (async () => {
         try { await this.nemotron.finalize(); this._nemotronFlushLive(); }
         catch (e) { console.warn('[nemotron] finalize', e && e.message || e); }
@@ -4758,20 +4759,6 @@ function _handleBridgeMessage(msg) {
       // Real-time context surfaced during meeting
       if (msg.text) {
         showToast('\uD83D\uDCA1 ' + msg.text, 4000);
-      }
-      break;
-
-    case 'query_response':
-    case 'response':
-      // Handle speaker name inference response
-      if (app && app.bridge && app.bridge._pendingSpeakerId && msg.text && app.tm && app.tm.speakerTracker) {
-        const inferredName = msg.text.trim();
-        if (inferredName && inferredName.toLowerCase() !== 'unknown') {
-          renameSpeaker(app.bridge._pendingSpeakerId, inferredName);
-          renderSpeakerTags();
-          showToast(`Speaker ${app.bridge._pendingSpeakerId} identified as: ${inferredName}`, 3000);
-        }
-        app.bridge._pendingSpeakerId = null;
       }
       break;
 
@@ -4917,7 +4904,7 @@ class App {
     return {
       ws: null, connected: false, reconnectTimer: null, callbacks: {},
       url: (typeof loadSettings === 'function' ? loadSettings() : {}).bridgeUrl || 'ws://localhost:8765',
-      _pendingSpeakerId: null, _onPanelOpen: null, _onPanelClose: null,
+      _onPanelOpen: null, _onPanelClose: null,
       connect() {},
       disconnect() {},
       send() { return false; },
@@ -5076,6 +5063,16 @@ class App {
   async start() {
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
+    const previousMeetingId = this.meetingId;
+    const previousStartEpoch = this._startEpoch;
+    const previousStartDisabled = startBtn.disabled;
+    const previousStartText = startBtn.textContent;
+    let previousState = null;
+    let startTitle = '';
+    let sessionStarted = false;
+    let engineStartAttempted = false;
+    let startedMeetingId = null;
+    let extensionStartSent = false;
     startBtn.disabled = true;
     startBtn.textContent = 'Starting...';
 
@@ -5085,9 +5082,15 @@ class App {
       // derives `canResume` by hand (Appendix A rows 1-2). `_startEpoch` is the
       // numeric start used for the db.meetings record + screenshot stamps.
       await this._sessionReady;
+      if (!this.session.ready) throw new Error('Recording session engine is unavailable.');
+      previousState = this.session.state;
+      if (previousState !== 'idle' && previousState !== 'stopped') {
+        throw new Error('Recording is already starting or active.');
+      }
       this._startEpoch = Date.now();
-      const titleInput = document.getElementById('meetingTitle').value;
-      const out = this.session.start(titleInput, this._startEpoch);
+      startTitle = document.getElementById('meetingTitle').value;
+      const out = this.session.start(startTitle, this._startEpoch);
+      sessionStarted = true;
       // The machine's resolved title (trim → default-if-empty → 120-char clamp).
       const title = this.session.title;
       const agenda = meetingAgendaText();
@@ -5095,6 +5098,7 @@ class App {
       const canResume = out.effects.some(fx => fx.tag === 'resume_capture_no_reload');
 
       this.meetingId = await storage.addMeeting(title || 'Untitled Meeting', agenda, this._startEpoch);
+      startedMeetingId = this.meetingId;
       setAgendaLocked(true);
       toggleAgendaEditor(false);
 
@@ -5105,6 +5109,7 @@ class App {
         type: 'meeting.start',
         payload: { meetingId: String(this.meetingId), title: title || 'Untitled Meeting', startMs: this._startEpoch },
       });
+      extensionStartSent = true;
 
       // Phase-F: on a warm Continue, re-persist the live tracker's current names
       // under the new meeting row (the tracker survives across meetings; its
@@ -5146,6 +5151,7 @@ class App {
       };
       this.tm.onSystemAudioEnded = () => this.onTabStreamEnded();
 
+      engineStartAttempted = true;
       if (canResume) {
         // Models loaded — re-create audio pipeline and resume
         // Open mic for resume; store on tm AND propagate to capture so _startAudioCapture
@@ -5216,24 +5222,73 @@ class App {
       this.tm.onSystemAudioEnded = () => this.onTabStreamEnded();
 
     } catch (err) {
-      this.handleStatus('Failed to start: ' + err.message, null);
+      if (!sessionStarted && previousState !== null && previousState !== 'idle' && previousState !== 'stopped') {
+        this.handleStatus('Failed to start: ' + err.message, null);
+        startBtn.disabled = previousStartDisabled;
+        startBtn.textContent = previousStartText;
+        return;
+      }
+      if (engineStartAttempted && this.tm) {
+        try { this.tm.stop({ finalize: false }); } catch (cleanupError) {
+          console.warn('[capture] cleanup after failed start failed', cleanupError);
+        }
+      }
+      if (sessionStarted) {
+        try {
+          this._applySession(this.session.stop(Date.now()));
+          if (previousState === 'idle') {
+            this._applySession(this.session.newMeeting());
+            this._applySession(this.session.setTitle(startTitle));
+          }
+        } catch (cleanupError) {
+          console.error('[session] failed to restore state after start error', cleanupError);
+        }
+      }
+      this.meetingId = previousMeetingId;
+      this._startEpoch = previousStartEpoch;
+      let cleanupFailure = false;
+      if (startedMeetingId != null) {
+        try {
+          await storage.updateMeetingEnd(startedMeetingId, Date.now(), 0);
+        } catch (cleanupError) {
+          cleanupFailure = true;
+          console.error('[storage] failed to close meeting after start error', cleanupError);
+        }
+        if (extensionStartSent) {
+          emitToExtensions({
+            type: 'meeting.stop',
+            payload: { meetingId: String(startedMeetingId), durationMs: 0 },
+          });
+        }
+      }
+      this.handleStatus('Failed to start: ' + err.message +
+        (cleanupFailure ? ' (could not close the local meeting record)' : ''), null);
       PerfMonitor.stop();
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+      document.getElementById('timer').classList.remove('running');
+      document.getElementById('recordingDot').classList.remove('active');
+      stopBtn.style.display = 'none';
+      document.getElementById('shareTabBtn').style.display = 'none';
+      startBtn.style.display = 'inline-flex';
       setAgendaLocked(false);
       startBtn.disabled = false;
-      startBtn.textContent = '&#9679; Start';
+      startBtn.innerHTML = previousState === 'stopped' ? '&#9679; Continue' : '&#9679; Start';
     }
   }
 
   async stop() {
     PerfMonitor.stopSoon();   // keep sampling 60s — Stop triggers the WebGPU recap/notes burst
+    let flushedNotes = [];
     if (this.tm) {
       // Flush the regex trigger-note buffer — only in transcript-only mode, where
       // these model-free notes are the fallback (mirrors handleFinal's gate).
       if (notesModelOff()) {
-        const flushed = this.noteEngine.flush();
-        for (const note of flushed) {
-          const id = await _addNoteObj(this.meetingId, note);
-          this.renderNote({ ...note, id });
+        try {
+          flushedNotes = this.noteEngine.flush();
+        } catch (error) {
+          console.error('[notes] failed to flush notes at stop', error);
+          showToast('Could not flush the last local notes.');
         }
       }
 
@@ -5245,6 +5300,16 @@ class App {
         this.tm._nemotronStopPromise = null;
       }
       // Don't null tm — models stay loaded for Continue/New Meeting
+    }
+
+    for (const note of flushedNotes) {
+      try {
+        const id = await _addNoteObj(this.meetingId, note);
+        this.renderNote({ ...note, id });
+      } catch (error) {
+        console.error('[storage] failed to save a flushed note', error);
+        showToast('Could not save a local note.');
+      }
     }
 
     clearInterval(this.timerInterval);
@@ -5263,11 +5328,16 @@ class App {
     const hooks = stopFx ? stopFx.payload : { recluster: true, final_notes: false, question_recap: false, auto_summary: false };
 
     if (this.meetingId) {
-      await storage.updateMeetingEnd(
-        this.meetingId,
-        endTime,
-        this._startEpoch ? endTime - this._startEpoch : 0,
-      );
+      try {
+        await storage.updateMeetingEnd(
+          this.meetingId,
+          endTime,
+          this._startEpoch ? endTime - this._startEpoch : 0,
+        );
+      } catch (error) {
+        console.error('[storage] failed to save meeting end', error);
+        showToast('Recording stopped, but the local meeting end could not be saved.');
+      }
       // PRD Phase 6 / R7: notify extensions the meeting stopped (gated on
       // meeting.metadata). The reference extension uses this to pull a full
       // snapshot via export.request and produce its Markdown.
@@ -5503,14 +5573,21 @@ class App {
 
     const timestamp = Date.now();
 
-    await storage.addTranscriptChunk(this.meetingId, timestamp, text.trim());
-
-    // PRD Phase 6 / R7: push the committed transcript segment to extensions
-    // (gated on transcript.text). Plain text + timing only — no audio.
-    emitToExtensions({
-      type: 'transcript.update',
-      payload: { segmentId: 'seg-' + timestamp, text: text.trim(), startMs: timestamp, endMs: timestamp },
-    });
+    let transcriptSaved = false;
+    try {
+      await storage.addTranscriptChunk(this.meetingId, timestamp, text.trim());
+      transcriptSaved = true;
+    } catch (error) {
+      console.error('[storage] failed to save transcript segment', error);
+      showToast('A transcript segment was not saved locally; copy it before closing.');
+    }
+    if (transcriptSaved) {
+      // Only committed transcript segments are sent to extensions.
+      emitToExtensions({
+        type: 'transcript.update',
+        payload: { segmentId: 'seg-' + timestamp, text: text.trim(), startMs: timestamp, endMs: timestamp },
+      });
+    }
 
     // Self-rendering engines promote/render their own transcript items, so
     // handleFinal must NOT re-render (it would duplicate every sentence):
@@ -5558,16 +5635,6 @@ class App {
     // Send to Claude for enhanced analysis if connected
     if (s.claudeBridge) this.bridge.sendTranscript(text.trim(), timestamp, customPrompt('bridge_enhance', BRIDGE_ENHANCE_SYSTEM));
 
-    // Try to infer speaker name from context if Claude is connected and a new speaker was detected
-    if (speakerInfo && speakerInfo.isNew && this.bridge.connected) {
-      const recentText = [...document.querySelectorAll('.transcript-text')].slice(-10).map(el => el.textContent).join(' ');
-      this.bridge.send({
-        type: 'query',
-        question: `A new speaker (${speakerInfo.id}) was just detected. Based on the recent meeting transcript, can you identify who this might be? Look for self-introductions, name mentions, or context clues. Recent transcript: "${recentText}". Reply with JUST the name, or "unknown" if you can't tell.`
-      });
-      // Store the pending speaker ID so we can fill it when Claude responds
-      this.bridge._pendingSpeakerId = speakerInfo.id;
-    }
   }
 
   renderTranscriptItem(tsMs, text, isDraft = false, speakerInfo = null) {
@@ -6550,7 +6617,7 @@ function retryBridgeConnect() {
   };
 
   _ensureBridgeReconnectLoaded().then(() => {
-    bridgeReconnect.setEnabled(settings.claudeBridge !== false);
+    bridgeReconnect.setEnabled(settings.claudeBridge === true);
     const decision = bridgeReconnect.manualConnect();
     if (decision.action !== 'connect') {
       app.bridge._onPanelOpen = null; app.bridge._onPanelClose = null;
@@ -7517,7 +7584,8 @@ const DEFAULT_SETTINGS = {
   model: 'nemotron',         // default ASR: CPU/WASM streaming — works on every tier (no WebGPU/16GB gate), frees the GPU for Qwen notes (the "private by architecture" pairing). Whisper/Voxtral remain user-selectable.
   dtype: 'q4f16',            // dtype/device apply only to the whisper/voxtral WebGPU path; Nemotron self-resolves and ignores them.
   device: 'webgpu',
-  claudeBridge: true,
+  claudeBridge: false,
+  claudeBridgeConsentVersion: 0,
   screenshots: true,
   liveOutline: true,         // Qwen meeting outline forming live in the notes panel during recording
   bridgeUrl: 'ws://localhost:8765',
@@ -7534,6 +7602,7 @@ function loadSettings() {
   try {
     const saved = localStorage.getItem('silentNotetaker_settings');
     const s = saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : { ...DEFAULT_SETTINGS };
+    s.claudeBridge = s.claudeBridge === true && s.claudeBridgeConsentVersion === 1;
     // Retired settings: trigger detection is now an internal transcript-only
     // fallback; final synthesis and the Stop summary are canonical behavior;
     // the partial-context question recap was removed.
@@ -7728,7 +7797,7 @@ function openSettings() {
         <div class="settings-section-title">Features</div>
 
         <label class="settings-row settings-toggle-row">
-          <span class="settings-label">Claude Bridge<span class="settings-hint">Enhanced analysis via local Claude server</span></span>
+          <span class="settings-label">Enable Claude cloud processing<span class="settings-hint">The local bridge forwards transcript text, notes, and shared-tab screenshots to Claude. Audio is not sent by the bridge. Enable only if you consent to this external processing.</span></span>
           <input type="checkbox" id="settingClaude" class="settings-toggle" ${s.claudeBridge ? 'checked' : ''}>
         </label>
 
@@ -7840,6 +7909,7 @@ function applySettings() {
     dtype: document.getElementById('settingDtype').value,
     device: document.getElementById('settingDevice').value,
     claudeBridge: document.getElementById('settingClaude').checked,
+    claudeBridgeConsentVersion: document.getElementById('settingClaude').checked ? 1 : 0,
     screenshots: document.getElementById('settingScreenshots').checked,
     liveOutline: document.getElementById('settingLiveOutline').checked,
     smartQuestions: document.getElementById('settingSmartQ').checked,
@@ -7917,6 +7987,7 @@ function applySettings() {
 
 function resetSettings() {
   saveSettings(DEFAULT_SETTINGS);
+  if (app.bridge) app.bridge.disconnect();
   openSettings(); // Re-render with defaults
   showToast('Settings reset to defaults');
 }

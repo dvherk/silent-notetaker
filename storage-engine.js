@@ -84,10 +84,21 @@ export class StorageEngine {
     if (this._loadPromise) return this._loadPromise;
 
     this._loadPromise = (async () => {
-      this._mod = await _loadModule(this.pkgUrl);
+      const modulePromise = _loadModule(this.pkgUrl);
+      try {
+        this._mod = await modulePromise;
+      } catch (error) {
+        const w = (typeof window !== 'undefined') ? window : globalThis;
+        const cache = w.__silentWebModulePromises;
+        if (cache && cache.get(this.pkgUrl) === modulePromise) cache.delete(this.pkgUrl);
+        throw error;
+      }
       this.ready = true;
       console.log('[rust-storage] StorageEngine ready (live CRUD + migration + durable speaker names)');
-    })();
+    })().catch(error => {
+      this._loadPromise = null;
+      throw error;
+    });
 
     return this._loadPromise;
   }

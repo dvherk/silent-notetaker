@@ -85,6 +85,11 @@ export class ClaudeBridge {
     this._policy = policy;
   }
 
+  _hasConsent() {
+    const settings = this._loadSettings();
+    return settings.claudeBridge === true && settings.claudeBridgeConsentVersion === 1;
+  }
+
   // Connect (or auto-reconnect). The Rust reconnect policy (Appendix A row 28)
   // owns the decision — whether to open a socket and, on close, whether/when to
   // retry. This executor just performs the action the policy returns and reports
@@ -92,8 +97,12 @@ export class ClaudeBridge {
   connect() {
     // Respect settings toggle. setEnabled keeps the policy in sync; a disabled
     // bridge yields {action:'none'} below (the old early-return path).
-    const settings = this._loadSettings();
-    this._policy.setEnabled(settings.claudeBridge !== false);
+    const enabled = this._hasConsent();
+    this._policy.setEnabled(enabled);
+    if (!enabled) {
+      this.updateIndicator(false);
+      return;
+    }
     const decision = this._policy.connectRequested();
     if (decision.action !== 'connect') {
       this.updateIndicator(false);
@@ -106,10 +115,24 @@ export class ClaudeBridge {
   // Rust policy (open/closed) and act on the returned action (arm a backoff
   // timer for the policy-computed delay, or stop).
   _openSocket() {
+    if (!this._hasConsent()) {
+      this.updateIndicator(false);
+      if (this._onPanelClose) {
+        const cb = this._onPanelClose;
+        this._onPanelOpen = null;
+        this._onPanelClose = null;
+        cb();
+      }
+      return;
+    }
     try {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
+        if (!this._hasConsent()) {
+          this.disconnect();
+          return;
+        }
         this.connected = true;
         this.updateIndicator(true);
         this._policy.open();   // clears backoff, records success
@@ -120,6 +143,7 @@ export class ClaudeBridge {
       };
 
       this.ws.onmessage = (e) => {
+        if (!this._hasConsent()) return;
         try {
           const msg = JSON.parse(e.data);
           if (this.onMessage) this.onMessage(msg);
@@ -167,7 +191,7 @@ export class ClaudeBridge {
   }
 
   send(msg) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this._hasConsent() && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
       return true;
     }
@@ -199,7 +223,9 @@ export class ClaudeBridge {
   updateIndicator(connected) {
     const dot   = document.getElementById('claudeDot');
     const label = document.getElementById('claudeLabel');
+    const mode  = document.getElementById('processingMode');
     if (dot)   { dot.className  = connected ? 'claude-dot connected' : 'claude-dot'; }
     if (label) { label.textContent = connected ? 'Claude connected' : 'Claude offline'; }
+    if (mode)  { mode.textContent = this._hasConsent() ? 'Cloud bridge enabled' : 'On-device processing'; }
   }
 }

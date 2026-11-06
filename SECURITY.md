@@ -1,9 +1,10 @@
 # Security Policy
 
-Silent Notetaker's security model rests on a single promise: **your audio, voice
-embeddings, and meeting content never leave your device except through explicit
-actions you take**. This document describes what counts as a security vulnerability,
-what the enforced boundaries are, and how to report a finding.
+The default capture and speech path is intended to stay local. The optional
+Claude bridge requires an explicit Settings opt-in and can forward transcript
+text, notes, and shared-tab screenshots to Claude for cloud processing. Browser
+storage is not application-encrypted. This document describes the intended
+boundaries and how to report a finding; it is not a completed security audit.
 
 ---
 
@@ -54,7 +55,7 @@ Any technique that allows an extension running in its sandboxed iframe to:
 Any path that makes raw PCM samples, compressed audio bytes, mel spectrograms, or
 voice embedding vectors available to:
 - An extension (via postMessage or any side channel).
-- The bridge WebSocket beyond transcript text.
+- The bridge WebSocket (which may carry transcript text and screenshots, but not raw audio).
 - A `localStorage`, `sessionStorage`, or IndexedDB key readable by third-party code.
 - A URL fragment, `history.pushState`, or other browser-observable state that could
   be intercepted.
@@ -81,7 +82,7 @@ hand. The current allowlist:
 - `https://cdn.pyke.io` — onnxruntime-web loader
 - `https://huggingface.co`, `https://*.hf.co`, `https://cdn-lfs.huggingface.co`,
   `https://cdn-lfs-us-1.huggingface.co` — model weight downloads
-- `ws://localhost:8765` — optional Claude bridge (user's own machine only)
+- `ws://localhost:8765` — optional local Claude bridge; the bridge may forward meeting content to Claude
 - `self`, `blob:`, `data:` — in-process resources
 
 There is no analytics origin. There is no telemetry endpoint. Adding either would
@@ -98,21 +99,21 @@ in the diff and rejected by CI.
   and cannot be sent across the boundary.
 - Network grants are origin-scoped, user-approved at install, and revocable.
 
-**Known pending limitation (J2b):** Per-extension `connect-src` relaxations (network
-grants) are not yet functional in the `srcdoc` iframe context because Chromium applies
-CSP by intersection with the embedder. The base page CSP is never relaxed; grants
-are effectively deny until J2b is resolved. This is a known gap, not a vulnerability —
-the privacy-critical direction (deny-by-default) is enforced; only the grant-relaxation
-direction is pending.
+Extension routes and their deployment limitations are described in
+`docs/EXTENSIONS.md`; extension isolation and network grants were not
+revalidated during the current baseline assessment.
 
 ### Audio boundary
 
 Audio flows from the AudioWorklet through a `Float32RingBuffer` directly into the
 WASM engine. It is never:
 - Serialized to JSON or any structured format for transmission.
-- Written to IndexedDB (only transcript chunks and metadata are stored).
+- Written to IndexedDB (which does store transcripts, notes and screenshots).
 - Made available to extension postMessage payloads.
-- Passed to the bridge (the bridge receives transcript text only).
+- Passed to the bridge (which can receive transcript text, notes and screenshots).
+
+Nemotron may temporarily spool PCM to the browser's origin-private file system;
+this is local storage, not application-level encryption.
 
 ---
 

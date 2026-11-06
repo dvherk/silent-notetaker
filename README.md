@@ -1,8 +1,12 @@
 # Silent Notetaker
 
-**Meeting notes that never leave your machine. No backend, no account, no upload.**
+**Local-first meeting notes, with optional cloud processing.**
 
-A private AI meeting notetaker that runs entirely in your browser. Open a tab, hit record, and it transcribes in real time, figures out *who said what*, and pulls out decisions, action items, key points, and open questions as they happen, all on-device, using speech and language models that run locally on your CPU and GPU. Nothing is ever sent to a server.
+Silent Notetaker is a browser-based meeting notetaker designed to capture and
+process audio locally. Its optional Claude bridge is off by default and, when
+explicitly enabled, forwards transcript text, notes, and shared-tab screenshots
+to Claude for cloud processing. See [the baseline assessment](docs/current-state.md)
+and [known limitations](docs/known-limitations.md) for what has been verified.
 
 > Top-5 Global Demo at AI Tinkerers.
 
@@ -14,7 +18,11 @@ A private AI meeting notetaker that runs entirely in your browser. Open a tab, h
 
 Every mainstream AI notetaker works the same way: it joins your call, **streams your audio to someone else's servers**, runs the AI there, and sends a summary back. The good ones are careful: encryption, SOC 2, "we delete the audio after transcription." Even the privacy-marketed ones (Granola, for example) still send your meeting to cloud LLMs and store it on their infrastructure. Their privacy is a **promise**, backed by a company.
 
-Silent Notetaker makes the promise structurally unnecessary. The audio is captured, fed to the models, and consumed **in-process**. It is never serialized into a network request. This is privacy **by architecture, not by policy**, and you can verify it: open your browser's network panel and watch. The only things the app ever fetches are JavaScript runtimes and model weights (downloaded once, then cached). A `Content-Security-Policy` `connect-src` allowlist, enforced and not report-only, makes the browser itself refuse any connection outside that set.
+The local capture path feeds audio to models in the browser. Model weights and
+runtime scripts are downloaded, and an enforced `Content-Security-Policy` limits
+browser connections. The optional Claude bridge is a separate cloud-processing
+path: its local server forwards meeting content to Claude. Browser CSP does not
+govern that server's outgoing connections.
 
 There are whole categories of conversation (legal, medical, hiring, finance, M&A, journalism with sources) where "the audio left the building" is a non-starter. This is built for those.
 
@@ -27,15 +35,15 @@ There are whole categories of conversation (legal, medical, hiring, finance, M&A
 - **Automatic note extraction**: sorts the conversation in real time into **Decisions**, **Action Items**, **Key Points**, and **Open Questions**.
 - **Live meeting outline & smart questions**: a small on-device LLM builds an outline as you go and suggests a sharp question worth asking *right now*.
 - **Slide / screen capture**: optionally grab tab audio and screenshots of shared slides.
-- **Local-first storage**: every meeting is saved on your device. Nothing is uploaded.
+- **Local-first storage**: meeting records are stored in the browser. They are not application-encrypted.
 - **Clean export**: copy the whole meeting as structured Markdown.
-- **Optional Claude bridge**: connect to Claude for sharper summaries via a local server *you* run. Entirely optional; the app is fully functional without it.
+- **Optional Claude bridge**: explicitly enable cloud processing in Settings and run `uv run bridge.py` separately. It can forward transcript text, notes, and screenshots to Claude; the bridge does not send audio. Existing users must opt in again because older versions enabled the bridge by default.
 
 ---
 
 ## How it works
 
-The whole pipeline runs client-side, in your browser:
+The local pipeline runs client-side, in your browser:
 
 <!-- credo-lint:allow-fenced pre-existing ASCII architecture diagram, mic icon labels the input node -->
 ```
@@ -55,7 +63,7 @@ The whole pipeline runs client-side, in your browser:
         Note extraction (Rust)  ───────────────▶  UI + local storage
                                                   (Rust/WASM, on-device)
 
-  (optional)  ⇄  Claude bridge (ws://localhost:8765, a server you run)
+  (optional)  ⇄  Claude bridge (local server)  ⇄  Claude cloud
 ```
 
 The design splits work across silicon so nothing contends: the **default ASR (Nemotron streaming)** runs on **CPU/WASM**, which leaves the **GPU free for on-device Qwen** to generate notes and questions. Heavier engines like Voxtral take the GPU when selected. The application *policy* (engine selection, diarization, note triggers, question scheduling, storage, the recording state machine) is written in **Rust, compiled to WebAssembly**, driving a thin HTML/JS shell.
@@ -66,21 +74,21 @@ The design splits work across silicon so nothing contends: the **default ASR (Ne
 
 **Requirements:** Chrome or Edge (most complete WebGPU support), a microphone, and a few hundred MB of free disk for the first-run model cache.
 
-**Fastest, just open it:** **[silentnotetaker.com](https://silentnotetaker.com)**. Same app, hosted on Cloudflare Pages with the cross-origin-isolation headers already set. Nothing is uploaded. The page only fetches JS runtimes and model weights (see [Privacy statement](#privacy-statement)). The first visit downloads the selected model; the large weights (the Nemotron encoder is ~880 MB) are then persisted **on-device in the browser's private file system (OPFS)**, keyed to the pinned model revision, so repeat visits skip the download entirely and the app works offline. It's purely a local cache, and bumping the model pin auto-invalidates the old copy.
+**Hosted app:** **[silentnotetaker.com](https://silentnotetaker.com)**. The page fetches runtime scripts and model weights; the optional bridge sends meeting content to Claude only after explicit opt-in. Model weights may be cached on-device in the browser's private file system (OPFS). Complete offline operation depends on all required assets being available and has not been validated in this assessment.
 
 **Run it locally** (full source, same behavior):
 
 ```bash
-git clone https://github.com/MikeSchirtzinger/silent-notetaker.git
+git clone https://github.com/dvherk/silent-notetaker.git
 cd silent-notetaker
 ./start.sh
 ```
 
-`start.sh` launches a local server with the right headers and opens the app at **http://localhost:8080**. Pick an engine, click **Start**, allow the mic, and talk. The first run downloads the selected model from Hugging Face and caches it on-device in the browser's private storage (OPFS), keyed to the model revision, so everyday repeat runs skip the download and work offline (bumping the pin re-fetches).
+`start.sh` launches a local server with the right headers and opens the app at **http://localhost:8080**. Pick an engine, click **Start**, allow the mic, and talk. The first run downloads the selected model from Hugging Face and may cache it on-device. The launcher does not start the optional Claude bridge.
 
 > **Why a server and not just opening the file?** The on-device models use multithreaded WebAssembly, which the browser only enables when the page is "cross-origin isolated" (it needs `SharedArrayBuffer`). That requires two HTTP headers (`COOP` + `COEP`) you can't set from a `file://` URL. `start.sh` runs a tiny server that sends them: a Rust (axum) one if you have `cargo`, otherwise a dependency-free Python fallback (`coi-server.py`). A plain `python -m http.server` will *load* the app but run single-threaded and several times slower.
 
-**Building the WebAssembly modules** (only needed if you change the Rust crates):
+**Building the WebAssembly modules** (required for a fresh source checkout because generated packages are not committed):
 
 ```bash
 ./scripts/build-wasm.sh
@@ -135,7 +143,14 @@ Models are pulled from Hugging Face at runtime and cached locally.
 
 ## Privacy statement
 
-Audio is captured, turned into model inputs, and consumed on-device. It is **never** written to a network request. If Nemotron falls behind, bounded PCM segments may temporarily enter the browser's origin-private local storage and are deleted after use or stop. There is no analytics endpoint, no telemetry host, and no crash-reporting origin in the codebase. The complete list of origins the app can contact is the CSP `connect-src` allowlist (Hugging Face for weights, two CDNs for runtimes, and the optional localhost Claude bridge), generated from `registry/models.toml` and enforced by the browser. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full trust boundary.
+The local speech path processes audio on-device. If Nemotron falls behind,
+bounded PCM segments may temporarily enter the browser's origin-private local
+storage. Model and runtime downloads require network access. The Claude bridge
+is off by default and requires a fresh Settings opt-in; once enabled, transcript
+text, notes, and screenshots can leave the device for Claude. Browser storage is
+not application-encrypted. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for
+the trust boundary and [`docs/known-limitations.md`](docs/known-limitations.md)
+for unverified behavior.
 
 ---
 

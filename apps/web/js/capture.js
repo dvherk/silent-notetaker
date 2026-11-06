@@ -47,14 +47,17 @@
  *   onSystemAudioEnded () => void
  *     Called when the browser's tab-sharing indicator is dismissed by the user
  *     (the audio track's `onended` event). Optional.
+ *   shouldCaptureScreenshot () => boolean
+ *     Determines whether screenshot capture is currently enabled. Optional.
  */
 export class CaptureGraph {
-  constructor({ onSamples, onScreenshot, getStorage, getMeetingId, onSystemAudioEnded } = {}) {
+  constructor({ onSamples, onScreenshot, getStorage, getMeetingId, onSystemAudioEnded, shouldCaptureScreenshot } = {}) {
     this._onSamples           = onSamples           || null;
     this._onScreenshot        = onScreenshot        || null;
     this._getStorage          = getStorage          || null;
     this._getMeetingId        = getMeetingId        || null;
     this._onSystemAudioEnded  = onSystemAudioEnded  || null;
+    this._shouldCaptureScreenshot = shouldCaptureScreenshot || (() => true);
 
     // AudioContext graph (set by startMic / startAudioCapture).
     this.audioContext   = null;
@@ -62,6 +65,9 @@ export class CaptureGraph {
     this.processor      = null;   // AudioWorkletNode "capture-processor"
     this.mediaStream    = null;   // mic MediaStream
     this.isRecording    = false;
+    this._captureGeneration = 0;
+    this._starting = false;
+    this._sharing = false;
 
     // System audio (set by addSystemAudio).
     this.systemStream   = null;
@@ -74,6 +80,7 @@ export class CaptureGraph {
     this.captureCanvas    = null;
     this.captureCtx       = null;
     this.screenshotInterval = null;
+    this.screenshotTimeout = null;
     this.lastFrameHash    = null;
   }
 
@@ -88,7 +95,8 @@ export class CaptureGraph {
    * @returns {Promise<MediaStream>}
    */
   async startMic() {
-    this.mediaStream = await navigator.mediaDevices.getUserMedia({
+    const generation = this._captureGeneration;
+    const mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         sampleRate: 16000,
@@ -97,6 +105,11 @@ export class CaptureGraph {
         autoGainControl: true,
       }
     });
+    if (generation !== this._captureGeneration) {
+      mediaStream.getTracks().forEach(track => track.stop());
+      throw new Error('Microphone capture was stopped while awaiting permission.');
+    }
+    this.mediaStream = mediaStream;
     return this.mediaStream;
   }
 
@@ -119,22 +132,31 @@ export class CaptureGraph {
    *   with a different engine).
    */
   async startAudioCapture(onSamplesOverride) {
-    const onSamples = onSamplesOverride || this._onSamples;
-    if (!this.mediaStream) await this.startMic();
-
-    this.audioContext = new AudioContext({ sampleRate: 16000 });
-    if (this.audioContext.state === 'suspended') {
-      await this.audioContext.resume();
+    if (this._starting || this.isRecording) {
+      throw new Error('Microphone capture is already starting or active.');
     }
+    this._starting = true;
+    const generation = this._captureGeneration;
+    const onSamples = onSamplesOverride || this._onSamples;
+    try {
+      if (!this.mediaStream) await this.startMic();
 
-    // Mixer node — addSystemAudio() also connects into this so mic + tab audio sum here.
-    this.audioInputNode = this.audioContext.createGain();
-    this.audioInputNode.gain.value = 1.0;
+      this.audioContext = new AudioContext({ sampleRate: 16000 });
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+      if (generation !== this._captureGeneration) {
+        throw new Error('Microphone capture was stopped during startup.');
+      }
 
-    const micSource = this.audioContext.createMediaStreamSource(this.mediaStream);
-    micSource.connect(this.audioInputNode);
+      // Mixer node — addSystemAudio() also connects into this so mic + tab audio sum here.
+      this.audioInputNode = this.audioContext.createGain();
+      this.audioInputNode.gain.value = 1.0;
 
-    const workletSrc = `
+      const micSource = this.audioContext.createMediaStreamSource(this.mediaStream);
+      micSource.connect(this.audioInputNode);
+
+      const workletSrc = `
       class CaptureProcessor extends AudioWorkletProcessor {
         process(inputs) {
           const input = inputs[0];
@@ -146,25 +168,37 @@ export class CaptureGraph {
       }
       registerProcessor("capture-processor", CaptureProcessor);
     `;
-    const workletUrl = URL.createObjectURL(new Blob([workletSrc], { type: 'application/javascript' }));
-    await this.audioContext.audioWorklet.addModule(workletUrl);
-    URL.revokeObjectURL(workletUrl);
+      const workletUrl = URL.createObjectURL(new Blob([workletSrc], { type: 'application/javascript' }));
+      try {
+        await this.audioContext.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+      if (generation !== this._captureGeneration) {
+        throw new Error('Microphone capture was stopped during startup.');
+      }
 
-    this.processor = new AudioWorkletNode(this.audioContext, 'capture-processor');
-    this.processor.port.onmessage = (e) => {
-      if (!this.isRecording) return;
-      if (onSamples) onSamples(new Float32Array(e.data));
-    };
+      this.processor = new AudioWorkletNode(this.audioContext, 'capture-processor');
+      this.processor.port.onmessage = (e) => {
+        if (!this.isRecording) return;
+        if (onSamples) onSamples(new Float32Array(e.data));
+      };
 
-    // Silent gain keeps the graph live without echoing audio back to speakers.
-    const silentGain = this.audioContext.createGain();
-    silentGain.gain.value = 0;
+      // Silent gain keeps the graph live without echoing audio back to speakers.
+      const silentGain = this.audioContext.createGain();
+      silentGain.gain.value = 0;
 
-    this.audioInputNode.connect(this.processor);
-    this.processor.connect(silentGain);
-    silentGain.connect(this.audioContext.destination);
+      this.audioInputNode.connect(this.processor);
+      this.processor.connect(silentGain);
+      silentGain.connect(this.audioContext.destination);
 
-    this.isRecording = true;
+      this.isRecording = true;
+    } catch (error) {
+      this.stop();
+      throw error;
+    } finally {
+      this._starting = false;
+    }
   }
 
   /**
@@ -182,54 +216,60 @@ export class CaptureGraph {
    * exist before tab audio can be mixed into it).
    */
   async addSystemAudio() {
-    if (!this.audioContext || !this.processor) {
+    if (!this.audioContext || !this.processor || !this.isRecording) {
       throw new Error('Start recording first, then add tab audio.');
     }
-
-    // Request tab/screen sharing — video:true required by Chrome to enable tab audio
-    const displayStream = await navigator.mediaDevices.getDisplayMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-      video: true,
-    });
-
-    // Keep first video track for screenshot capture, stop the rest
-    const videoTracks = displayStream.getVideoTracks();
-    if (videoTracks.length > 0) {
-      this.startScreenshotCapture(videoTracks[0]);
-      for (let i = 1; i < videoTracks.length; i++) videoTracks[i].stop();
+    if (this._sharing || this.systemStream) {
+      throw new Error('Tab audio is already being shared or requested.');
     }
+    this._sharing = true;
+    const generation = this._captureGeneration;
 
-    const audioTracks = displayStream.getAudioTracks();
-    if (audioTracks.length === 0) {
-      throw new Error('No audio track from shared tab. Make sure "Share tab audio" is checked.');
-    }
+    try {
+      // Request tab/screen sharing — video:true required by Chrome to enable tab audio
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+        video: true,
+      });
 
-    // Store for cleanup
-    this.systemStream = displayStream;
+      this.systemStream = displayStream;
+      if (generation !== this._captureGeneration || !this.isRecording) {
+        throw new Error('Recording was stopped while awaiting tab sharing.');
+      }
 
-    // Create source and connect to the same processor — Web Audio sums (mixes) inputs
-    const systemSource = this.audioContext.createMediaStreamSource(
-      new MediaStream(audioTracks)
-    );
+      const audioTracks = displayStream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error('No audio track from shared tab. Make sure "Share tab audio" is checked.');
+      }
 
-    // Optional: add gain to balance system vs mic levels
-    this.systemGain = this.audioContext.createGain();
-    this.systemGain.gain.value = 1.5; // boost tab audio slightly
-    systemSource.connect(this.systemGain);
-    this.systemGain.connect(this.audioInputNode);
+      // Create source and connect to the same processor — Web Audio sums (mixes) inputs
+      this.systemSource = this.audioContext.createMediaStreamSource(new MediaStream(audioTracks));
+      this.systemGain = this.audioContext.createGain();
+      this.systemGain.gain.value = 1.5;
+      this.systemSource.connect(this.systemGain);
+      this.systemGain.connect(this.audioInputNode);
 
-    this.systemSource = systemSource;
+      const videoTracks = displayStream.getVideoTracks();
+      if (videoTracks.length > 0) {
+        this.startScreenshotCapture(videoTracks[0]);
+        for (let i = 1; i < videoTracks.length; i++) videoTracks[i].stop();
+      }
 
-    // Detect when user stops sharing from browser chrome
-    audioTracks[0].onended = () => {
+      audioTracks[0].onended = () => {
+        this.removeSystemAudio();
+        if (this._onSystemAudioEnded) this._onSystemAudioEnded();
+      };
+    } catch (error) {
       this.removeSystemAudio();
-      if (this._onSystemAudioEnded) this._onSystemAudioEnded();
-    };
+      throw error;
+    } finally {
+      this._sharing = false;
+    }
   }
 
   /** Disconnect and tear down the system audio branch (inverse of addSystemAudio). */
@@ -246,10 +286,19 @@ export class CaptureGraph {
    * Models stay loaded; callers can re-open the graph for a new session.
    */
   stop() {
+    this._captureGeneration++;
     this.isRecording = false;
     this.removeSystemAudio();
     if (this.processor)   { try { this.processor.disconnect();   } catch (_) {} this.processor   = null; }
-    if (this.audioContext){ try { this.audioContext.close();       } catch (_) {} this.audioContext = null; }
+    if (this.audioContext) {
+      try {
+        this.audioContext.close().catch(error => console.warn('[capture] AudioContext close failed', error));
+      } catch (error) {
+        console.warn('[capture] AudioContext close failed', error);
+      }
+      this.audioContext = null;
+    }
+    this.audioInputNode = null;
     if (this.mediaStream) { this.mediaStream.getTracks().forEach(t => t.stop()); this.mediaStream = null; }
   }
 
@@ -279,7 +328,10 @@ export class CaptureGraph {
     // Capture every 15 seconds
     this.screenshotInterval = setInterval(() => this.captureFrame(), 15000);
     // Also capture first frame after short delay
-    setTimeout(() => this.captureFrame(), 2000);
+    this.screenshotTimeout = setTimeout(() => {
+      this.screenshotTimeout = null;
+      this.captureFrame();
+    }, 2000);
   }
 
   /**
@@ -289,7 +341,8 @@ export class CaptureGraph {
    * active. Safe to call manually for an on-demand capture.
    */
   captureFrame() {
-    if (!this.videoElement || this.videoElement.readyState < 2) return;
+    if (!this._shouldCaptureScreenshot() || !this.videoElement || this.videoElement.readyState < 2) return;
+    const videoTrack = this.videoTrack;
 
     // Scale to max 640px wide for thumbnails
     const vw = this.videoElement.videoWidth;
@@ -318,11 +371,12 @@ export class CaptureGraph {
 
     // Convert to JPEG blob
     this.captureCanvas.toBlob((blob) => {
-      if (!blob) return;
+      if (!blob || this.videoTrack !== videoTrack || !this._shouldCaptureScreenshot()) return;
 
       // Convert to base64 for storage and sending
       const reader = new FileReader();
       reader.onloadend = () => {
+        if (this.videoTrack !== videoTrack || !this._shouldCaptureScreenshot()) return;
         const base64 = reader.result; // data:image/jpeg;base64,...
         const timestamp = Date.now();
 
@@ -345,6 +399,7 @@ export class CaptureGraph {
   /** Stop the screenshot interval and release the video element and canvas. */
   stopScreenshotCapture() {
     if (this.screenshotInterval) { clearInterval(this.screenshotInterval); this.screenshotInterval = null; }
+    if (this.screenshotTimeout) { clearTimeout(this.screenshotTimeout); this.screenshotTimeout = null; }
     if (this.videoTrack)   { this.videoTrack.stop(); this.videoTrack = null; }
     if (this.videoElement) { this.videoElement.srcObject = null; this.videoElement = null; }
     this.captureCanvas    = null;

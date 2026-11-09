@@ -53,6 +53,15 @@ Hosted Linux and local browser evidence:
   byte-identical Wasm builds; and the strengthened synthetic storage fixture.
   The workspace audit retained the documented pre-existing unmaintained
   `derivative` warning, RUSTSEC-2024-0388. No model or real microphone was used.
+- [Run 42588723577](https://github.com/dvherk/silent-notetaker/actions/runs/42588723577)
+  exposed a Wasm compilation error in the screenshot-field preservation change.
+  Its first build step also masked the failed build behind `tee`; both issues
+  were corrected.
+- **Passed:** [Run 42589056622](https://github.com/dvherk/silent-notetaker/actions/runs/42589056622)
+  on commit `cd67163` passed all hosted jobs, including the browser fixture
+  checking synthetic unrecognized screenshot fields through migration and
+  direct upgrade. The fixed Wasm artifact also passed that fixture locally in
+  headless Edge.
 - **Passed locally:** 49 Node tests and headless Edge using the hosted
   `silent-web` package with a synthetic Dexie-v2 fixture. The fixture checks
   migration and backup event ordering, screenshot encodings and bytes, repeat

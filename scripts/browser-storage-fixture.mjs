@@ -163,6 +163,9 @@ export async function verifyAfterReload() {
   'The new meeting did not persist its expected fields');
   check(summary.notes.some(note => note.meetingId === meeting.id && note.category === 'decisions'),
     'The locally generated synthetic note did not persist');
+  check(JSON.stringify(await readScreenshotExtras()) === JSON.stringify(
+    [0, 1, 2].map(index => ({ label: 'Synthetic extra field', values: [index, true] })),
+  ), 'Unrecognized synthetic screenshot fields did not persist after reload');
   return { meetingCount: summary.meetingCount, noteCount: summary.noteCount, reloaded: true };
 }
 

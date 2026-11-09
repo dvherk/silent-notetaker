@@ -185,8 +185,11 @@ async function run(browserPath) {
               if (message.type === 'init') setTimeout(() => this.onmessage?.({ data: { type: 'ready' } }), 20);
               if (message.type === 'transcribe') setTimeout(() => {
                 window.appSmokeDecoded++;
+                if (message.chunk > 0) window.appSmokeTailSamples = message.audio.length;
                 this.onmessage?.({ data: { type: 'decoded', chunk: message.chunk,
-                  text: 'After a long debate we have decided to ship on Friday.' } });
+                  text: message.chunk === 0
+                    ? 'After a long debate we have decided to ship on Friday.'
+                    : 'The synthetic final follow up will be reviewed tomorrow.' } });
               }, 20);
             }
             terminate() {}
@@ -280,14 +283,26 @@ async function run(browserPath) {
         ` : `
           await app.handleFinal('After a long debate we have decided to ship on Friday.');
         `}
+        ${whisperWorkerSmoke ? `
+          const remainder = app.tm.whisper._mirror.length % 80000;
+          const extra = remainder >= 76000 ? 80000 - remainder + 4000 : 4000;
+          app.tm.whisper.feed(new Float32Array(extra).fill(0.5));
+        ` : ''}
         await app.stop();
         const detail = await storage.meetingDetail(app.meetingId);
-        if (track.readyState !== 'ended' || detail.chunks.length !== 1 ||
+        if (track.readyState !== 'ended' || detail.chunks.length !== ${whisperWorkerSmoke ? 2 : 1} ||
           !detail.notes.some(note => note.category === 'decisions')) {
           throw new Error('Offline app capture, transcript or local note did not persist');
         }
+        ${whisperWorkerSmoke ? `
+          if (!window.appSmokeTailSamples || window.appSmokeTailSamples >= 80000 ||
+            !detail.chunks.some(chunk => chunk.text === 'The synthetic final follow up will be reviewed tomorrow.')) {
+            throw new Error('Final partial Whisper chunk was not persisted before stop');
+          }
+        ` : ''}
         return { offline: !navigator.onLine, samples: window.appSmokeSamples,
           syntheticDecodes: window.appSmokeDecoded || 0,
+          tailSamples: window.appSmokeTailSamples || 0,
           trackState: track.readyState, chunks: detail.chunks.length, notes: detail.notes.length };
       })()`);
       console.log(JSON.stringify({ appRun }, null, 2));
@@ -315,8 +330,9 @@ async function run(browserPath) {
         const meeting = meetings.find(item => item.title === 'Synthetic offline session');
         if (!meeting) throw new Error('Offline meeting was not persisted after reload');
         const detail = await storage.meetingDetail(meeting.id);
-        if (detail.chunks.length !== 1 || detail.chunks[0].text !==
+        if (detail.chunks.length !== ${whisperWorkerSmoke ? 2 : 1} || detail.chunks[0].text !==
           'After a long debate we have decided to ship on Friday.' ||
+          ${whisperWorkerSmoke ? "detail.chunks[1].text !== 'The synthetic final follow up will be reviewed tomorrow.' ||" : ''}
           !detail.notes.some(note => note.category === 'decisions') ||
           detail.meeting.endTime === null) {
           throw new Error('Offline transcript, local note, or stop time was not persisted after reload');

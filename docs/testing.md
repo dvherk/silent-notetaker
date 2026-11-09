@@ -68,6 +68,12 @@ Hosted Linux and local browser evidence:
   checking synthetic unrecognized screenshot fields through migration and
   direct upgrade. The fixed Wasm artifact also passed that fixture locally in
   headless Edge.
+- **Passed:** [Run 42594641616](https://github.com/dvherk/silent-notetaker/actions/runs/42594641616)
+  on commit `7bac57a` passed all hosted jobs. The browser fixture drained an
+  exact 4,000-sample synthetic Whisper tail and waited for its callback; the
+  hosted Wasm artifact passed the same fixture in Edge. An additional Edge
+  app-shell check persisted a synthetic final partial transcript through Stop
+  and reload with a mocked model worker.
 - **Passed locally:** 49 Node tests and headless Edge using the hosted
   `silent-web` package with a synthetic Dexie-v2 fixture. The fixture checks
   migration and backup event ordering, screenshot encodings and bytes, repeat
@@ -89,7 +95,6 @@ Hosted Linux and local browser evidence:
   not load a model or test recognition quality.
 - **Passed locally:** 77 Node tests with mocked worker and policy coverage for
   tail draining, ordered decode, Stop sequencing, and late transcript isolation.
-  The new Rust/Wasm tail path requires the hosted build and browser fixture.
 - **Passed locally:** the actual app shell started and stopped with a synthetic
   microphone after its dependencies were preloaded and the network was
   simulated offline. A synthetic transcript injected into the app produced a

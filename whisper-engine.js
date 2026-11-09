@@ -47,6 +47,7 @@
 import { loadSilentWebModule } from './silent-web-loader.js';
 
 const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
+const DRAIN_TIMEOUT_MS = 120_000;
 
 // The executor worker source now lives in the permanent transformers-host.js
 // module so any future js-transformers host can share it. Re-exported here
@@ -83,6 +84,9 @@ export class WhisperEngine {
     // Pending chunk spans, keyed by chunk index, so a decoded reply can be
     // range-stamped with the exact span the policy issued the command for.
     this._spans = new Map();
+    this._pending = new Map();
+    this._pendingErrors = [];
+    this._flushPromise = null;
     // The policy owns chunk BOUNDARIES (it buffers counts + decides VAD-skip);
     // the host owns the SAMPLES. The mirror is that host-side sample buffer, keyed
     // by absolute sample position so a `transcribe` command's `start_ms` resolves
@@ -98,6 +102,7 @@ export class WhisperEngine {
   /** Load the Wasm policy and wait for the worker's model-ready event. */
   load(config = {}) {
     if (this._loadPromise) return this._loadPromise;
+    if (this._pending.size) return Promise.reject(new Error('Previous transcription is still being saved'));
     const generation = ++this._loadGeneration;
     const cancellation = new Promise((_, reject) => { this._cancelLoad = reject; });
     const operation = (async () => {
@@ -175,14 +180,40 @@ export class WhisperEngine {
     this._appendMirror(samples);
     const cmds = JSON.parse(this._policy.pushSamples(samples));
     for (const cmd of cmds) {
-      if (cmd.cmd === 'transcribe') {
-        // The policy stamped this chunk's span in ms; resolve it to absolute
-        // sample offsets and slice the exact chunk audio out of the mirror.
-        const audio = this._sliceChunk(cmd.start_ms);
-        if (!audio) continue;   // mirror desync guard (should not happen)
-        this._spans.set(cmd.chunk, { start_ms: cmd.start_ms, end_ms: cmd.end_ms });
-        this._worker.postMessage({ type: 'transcribe', chunk: cmd.chunk, audio }, [audio.buffer]);
-      }
+      if (cmd.cmd === 'transcribe') this._sendChunk(cmd, false);
+    }
+  }
+
+  _sendChunk(cmd, tail) {
+    const audio = this._sliceChunk(cmd.start_ms, tail);
+    if (!audio) {
+      const error = new Error('Whisper audio buffer is out of sync');
+      this._pendingErrors.push(error);
+      this.onStatus?.('Error: ' + error.message, null);
+      throw error;
+    }
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    this._spans.set(cmd.chunk, { start_ms: cmd.start_ms, end_ms: cmd.end_ms });
+    this._pending.set(cmd.chunk, { promise, resolve, processing: false });
+    try {
+      this._worker.postMessage({ type: 'transcribe', chunk: cmd.chunk, audio }, [audio.buffer]);
+    } catch (error) {
+      this._finishChunk(cmd.chunk, error);
+      throw error;
+    }
+  }
+
+  _finishChunk(chunk, error = null) {
+    const pending = this._pending.get(chunk);
+    if (!pending) return;
+    this._pending.delete(chunk);
+    this._spans.delete(chunk);
+    if (error) this._pendingErrors.push(error);
+    pending.resolve();
+    if (error) {
+      try { this.onStatus?.('Error: ' + (error.message || error), null); }
+      catch (statusError) { console.error('[rust-whisper] status update failed:', statusError); }
     }
   }
 
@@ -200,10 +231,11 @@ export class WhisperEngine {
    * (any preceding VAD-skipped silent chunk audio the policy already consumed).
    * @returns {Float32Array|null}
    */
-  _sliceChunk(startMs) {
+  _sliceChunk(startMs, tail = false) {
     const startAbs = Math.round(startMs * 16000 / 1000);
-    const n = this._chunkSamples;
     const offset = startAbs - this._mirrorBaseAbs;
+    const n = tail ? this._mirror.length - offset : this._chunkSamples;
+    if (n <= 0) return null;
     if (offset < 0 || offset + n > this._mirror.length) return null;
     const out = Float32Array.from(this._mirror.subarray(offset, offset + n));
     // Advance the mirror base past this chunk; drop the consumed prefix.
@@ -211,6 +243,50 @@ export class WhisperEngine {
     this._mirror = this._mirror.subarray(consumed);
     this._mirrorBaseAbs += consumed;
     return out;
+  }
+
+  /** Drain a final partial chunk and wait for pending transcript persistence. */
+  flush() {
+    if (this._flushPromise) return this._flushPromise;
+    this._flushPromise = (async () => {
+      let failure = null;
+      if (!this.ready || !this._policy || !this._worker) {
+        failure = new Error('Whisper worker is unavailable for final transcription');
+      } else {
+        try {
+          const tail = JSON.parse(this._policy.flushTail());
+          if (tail?.cmd === 'transcribe') this._sendChunk(tail, true);
+        } catch (error) {
+          failure = error;
+          try { this._teardown(); } catch (cleanupError) {
+            failure = new AggregateError([error, cleanupError], 'Final transcription and cleanup failed');
+          }
+        }
+      }
+      const pending = [...this._pending.values()].map(item => item.promise);
+      let timeout;
+      try {
+        await Promise.race([
+          Promise.all(pending),
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('Timed out waiting for final transcription')), DRAIN_TIMEOUT_MS);
+          }),
+        ]);
+      } catch (error) {
+        try { this._teardown(); } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Final transcription and cleanup failed');
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+      const errors = this._pendingErrors.splice(0);
+      if (failure) errors.unshift(failure);
+      if (errors.length) {
+        throw new AggregateError(errors, 'One or more transcription chunks failed');
+      }
+    })().finally(() => { this._flushPromise = null; });
+    return this._flushPromise;
   }
 
   /** Request stop: drain the worker, terminate, finalize the policy. */
@@ -231,8 +307,10 @@ export class WhisperEngine {
   }
 
   reset() {
+    if (this._pending.size) throw new Error('Cannot reset Whisper while transcription is pending');
     this._policy?.reset();
     this._spans.clear();
+    this._pendingErrors = [];
     this._mirror = new Float32Array(0);
     this._mirrorBaseAbs = 0;
   }
@@ -250,21 +328,34 @@ export class WhisperEngine {
       this.onStatus?.(this.dualLeg ? 'Moonshine ready, loading SenseVoice...' : 'Moonshine ready — fully local', this.dualLeg ? 30 : 100);
       return;
     }
-    if (type === 'error') { this._onWorkerError(data.message); return; }
+    if (type === 'error') {
+      if (typeof data.chunk === 'number') this._finishChunk(data.chunk, new Error(data.message));
+      else this._onWorkerError(data.message);
+      return;
+    }
     if (type === 'decoded') {
+      const pending = this._pending.get(data.chunk);
+      if (!pending || pending.processing) return;
+      pending.processing = true;
       // Run the decoded text back through the Rust policy (hallucination + dedup).
       const span = this._spans.get(data.chunk) || { start_ms: 0, end_ms: 0 };
-      this._spans.delete(data.chunk);
-      const events = JSON.parse(this._policy.onDecoded(data.text || '', span.start_ms, span.end_ms));
-      for (const ev of events) {
-        if (ev.tag === 'final') {
-          // Corrections compose downstream of dedup — exactly where the JS worker
-          // applied them (after dedup, before emit).
-          const corrected = this._corrections ? this._corrections.apply(ev.payload.text) : ev.payload.text;
-          if (corrected && corrected.trim()) this.onFinal?.(corrected.trim());
-        } else if (ev.tag === 'partial') {
-          this.onPartial?.(ev.payload.text);
+      try {
+        const events = JSON.parse(this._policy.onDecoded(data.text || '', span.start_ms, span.end_ms));
+        const callbacks = [];
+        for (const ev of events) {
+          if (ev.tag === 'final') {
+            const corrected = this._corrections ? this._corrections.apply(ev.payload.text) : ev.payload.text;
+            if (corrected && corrected.trim()) callbacks.push(this.onFinal?.(corrected.trim()));
+          } else if (ev.tag === 'partial') {
+            callbacks.push(this.onPartial?.(ev.payload.text));
+          }
         }
+        Promise.all(callbacks).then(
+          () => this._finishChunk(data.chunk),
+          error => this._finishChunk(data.chunk, error),
+        );
+      } catch (error) {
+        this._finishChunk(data.chunk, error);
       }
     }
   }
@@ -306,6 +397,11 @@ export class WhisperEngine {
     this._policy = null;
     this._corrections = null;
     this._loadPromise = null;
+    for (const [chunk, pending] of this._pending) {
+      if (!pending.processing) {
+        this._finishChunk(chunk, new Error('Transcription worker stopped before the result arrived'));
+      }
+    }
     this._spans.clear();
     this._mirror = new Float32Array(0);
     this._mirrorBaseAbs = 0;

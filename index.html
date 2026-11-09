@@ -3673,6 +3673,7 @@ class TranscriptionManager {
     this.nemotron = null;
     this.nemoRing = null;
     this._nemotronStopPromise = null;
+    this._whisperStopPromise = null;
     // Rust-policy-driven engine loaders (strangler-fig; Appendix A rows 10, 11):
     // Whisper/Moonshine solo (whisper), SenseVoice solo (senseVoice), Dual (dual),
     // and the Voxtral two-cap recycle policy (_voxtralPolicy).
@@ -4691,11 +4692,14 @@ class TranscriptionManager {
         catch (e) { console.warn('[nemotron] finalize', e && e.message || e); }
       })();
     }
+    if (finalize && this.whisper) {
+      this._whisperStopPromise = this.whisper.flush();
+    }
     // Worker and SenseVoice stay loaded for quick resume
   }
 
   destroy() {
-    this.stop();
+    this.stop({ finalize: false });
     if (this.senseVoice) { this.senseVoice.destroy(); this.senseVoice = null; }
     if (this.dual) { this.dual.stop?.(); this.dual = null; }
     if (this.whisper) {
@@ -5316,28 +5320,52 @@ class App {
   }
 
   async stop() {
+    if (this._stopPromise) return this._stopPromise;
+    document.getElementById('stopBtn').disabled = true;
+    this._stopPromise = this._stopOnce().finally(() => {
+      this._stopPromise = null;
+      document.getElementById('stopBtn').disabled = false;
+    });
+    return this._stopPromise;
+  }
+
+  async _stopOnce() {
+    const endTime = Date.now();
     PerfMonitor.stopSoon();   // keep sampling 60s — Stop triggers the WebGPU recap/notes burst
     let flushedNotes = [];
     if (this.tm) {
-      // Flush the regex trigger-note buffer — only in transcript-only mode, where
-      // these model-free notes are the fallback (mirrors handleFinal's gate).
-      if (notesModelOff()) {
-        try {
-          flushedNotes = this.noteEngine.flush();
-        } catch (error) {
-          console.error('[notes] failed to flush notes at stop', error);
-          showToast('Could not flush the last local notes.');
-        }
-      }
-
       this.tm.stop();
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+      document.getElementById('recordingDot').classList.remove('active');
+      document.getElementById('timer').classList.remove('running');
       // Nemotron decodes its trailing tail asynchronously — wait for it so the final
       // partial sentence is in the transcript before we summarize / send to the bridge.
       if (this.tm._nemotronStopPromise) {
         try { await this.tm._nemotronStopPromise; } catch (_) {}
         this.tm._nemotronStopPromise = null;
       }
+      if (this.tm._whisperStopPromise) {
+        this.handleStatus('Finishing transcription...', null);
+        try {
+          await this.tm._whisperStopPromise;
+        } catch (error) {
+          console.error('[rust-whisper] final transcription failed:', error);
+          showToast('Recording stopped, but some final audio could not be transcribed.');
+        }
+        this.tm._whisperStopPromise = null;
+      }
       // Don't null tm — models stay loaded for Continue/New Meeting
+    }
+
+    // Flush notes after final transcript callbacks have completed.
+    if (notesModelOff()) {
+      try {
+        flushedNotes = this.noteEngine.flush();
+      } catch (error) {
+        console.error('[notes] failed to flush notes at stop', error);
+        showToast('Could not flush the last local notes.');
+      }
     }
 
     for (const note of flushedNotes) {
@@ -5358,7 +5386,6 @@ class App {
     // the gating matches — Appendix A rows 18-21, 31). `_startEpoch` is the
     // numeric start for the db.meetings duration write.
     this._syncSessionConfig();
-    const endTime = Date.now();
     const out = this.session.stop(endTime);
     // The stop-hook decision (the run_stop_hooks side effect): which on-device
     // passes the orchestrator authorized. The summary MODAL always opens below.
@@ -5605,7 +5632,8 @@ class App {
   }
 
   async handleFinal(text, speakerInfo = null) {
-    if (!text.trim() || !this.meetingId) return;
+    const meetingId = this.meetingId;
+    if (!text.trim() || !meetingId) return;
 
     document.getElementById('partialText').style.display = 'none';
 
@@ -5613,12 +5641,13 @@ class App {
 
     let transcriptSaved = false;
     try {
-      await storage.addTranscriptChunk(this.meetingId, timestamp, text.trim());
+      await storage.addTranscriptChunk(meetingId, timestamp, text.trim());
       transcriptSaved = true;
     } catch (error) {
       console.error('[storage] failed to save transcript segment', error);
       showToast('A transcript segment was not saved locally; copy it before closing.');
     }
+    if (this.meetingId !== meetingId) return;
     if (transcriptSaved) {
       // Only committed transcript segments are sent to extensions.
       emitToExtensions({
@@ -5651,7 +5680,8 @@ class App {
       const noteResults = this.noteEngine.analyze(text);
       OpenQs.consider(text);   // resolve any prior open questions this text answers (before adding new ones)
       for (const note of noteResults) {
-        const id = await _addNoteObj(this.meetingId, note);
+        const id = await _addNoteObj(meetingId, note);
+        if (this.meetingId !== meetingId) return;
         this.renderNote({ ...note, id });
         if (note.category === 'questions') OpenQs.add(id, note.text);
         // PRD Phase 6 / R7: push the extracted note to extensions (gated

@@ -18,6 +18,8 @@ Acceptance criteria for this increment:
    transient failures without corrupting shared Wasm initialization.
 7. Whisper/Moonshine startup waits for model readiness before opening the
    microphone; failures and cancelled initialization release acquired resources.
+8. Solo Whisper/Moonshine Stop drains a speech-bearing partial chunk and pending
+   transcript callbacks before note flush and meeting close, or reports failure.
 
 Local results on 2026-11-06, with later hosted checks below:
 
@@ -85,6 +87,9 @@ Hosted Linux and local browser evidence:
   and Wasm policy using a synthetic microphone and a mocked model worker. It
   checked synthetic transcript and local-note persistence after reload. It did
   not load a model or test recognition quality.
+- **Passed locally:** 77 Node tests with mocked worker and policy coverage for
+  tail draining, ordered decode, Stop sequencing, and late transcript isolation.
+  The new Rust/Wasm tail path requires the hosted build and browser fixture.
 - **Passed locally:** the actual app shell started and stopped with a synthetic
   microphone after its dependencies were preloaded and the network was
   simulated offline. A synthetic transcript injected into the app produced a

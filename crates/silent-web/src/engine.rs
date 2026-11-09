@@ -178,6 +178,16 @@ impl WasmWhisperStream {
         to_js_value(&commands)
     }
 
+    /// Return the final speech-bearing partial chunk, or JSON null if none exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `JsError` only on JSON serialization failure.
+    #[wasm_bindgen(js_name = flushTail)]
+    pub fn flush_tail(&mut self) -> Result<JsValue, JsError> {
+        to_js_value(&self.policy.flush_tail())
+    }
+
     /// Feed the worker's decoded text for one chunk back through the post-decode
     /// filters (length guard, hallucination filter, tail-dedup) and return the
     /// resulting `EngineEvent[]` JSON — a single `Final` (range-stamped with the

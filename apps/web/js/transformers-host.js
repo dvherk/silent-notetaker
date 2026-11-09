@@ -67,6 +67,7 @@ const _tf = import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dis
 
 let transcriber = null;
 let isInitializing = false;
+let decodeQueue = Promise.resolve();
 let config = {
   model: 'onnx-community/whisper-large-v3-turbo',
   dtype: 'q4f16',
@@ -132,18 +133,19 @@ self.onmessage = async (e) => {
 
   if (type === 'transcribe') {
     const { chunk, audio } = e.data;
-    if (!transcriber) { self.postMessage({ type: 'decoded', chunk, text: '' }); return; }
-    try {
-      const isEnglishOnly = config.model.includes('.en') || config.model.includes('moonshine');
-      const opts = { return_timestamps: false };
-      if (!isEnglishOnly) opts.language = config.language;
-      const result = await transcriber(audio, opts);
-      const text = (result && result.text) ? result.text : '';
-      self.postMessage({ type: 'decoded', chunk, text });
-    } catch (err) {
-      self.postMessage({ type: 'error', message: \`Transcription error: \${err.message}\` });
-      self.postMessage({ type: 'decoded', chunk, text: '' });
-    }
+    decodeQueue = decodeQueue.then(async () => {
+      try {
+        if (!transcriber) throw new Error('Transcription model is not ready');
+        const isEnglishOnly = config.model.includes('.en') || config.model.includes('moonshine');
+        const opts = { return_timestamps: false };
+        if (!isEnglishOnly) opts.language = config.language;
+        const result = await transcriber(audio, opts);
+        const text = (result && result.text) ? result.text : '';
+        self.postMessage({ type: 'decoded', chunk, text });
+      } catch (err) {
+        self.postMessage({ type: 'error', chunk, message: \`Transcription error: \${err.message}\` });
+      }
+    });
   }
 
   if (type === 'terminate') { transcriber = null; self.close(); }

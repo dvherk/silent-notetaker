@@ -45,12 +45,16 @@ async function run(browserPath) {
       content: await readFile(new URL('../silent-web-loader.js', import.meta.url)),
       type: 'text/javascript',
     });
-    for (const name of ['session-engine.js', 'notes-engine.js']) {
+    for (const name of ['session-engine.js', 'notes-engine.js', 'whisper-engine.js']) {
       extraAssets.set(`/${name}`, {
         content: await readFile(new URL(`../${name}`, import.meta.url)),
         type: 'text/javascript',
       });
     }
+    extraAssets.set('/apps/web/js/transformers-host.js', {
+      content: await readFile(new URL('../apps/web/js/transformers-host.js', import.meta.url)),
+      type: 'text/javascript',
+    });
     async function addPackageFiles(directory, prefix) {
       for (const entry of await readdir(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);

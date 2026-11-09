@@ -97,7 +97,38 @@ export async function runCoreEngines() {
     .some(note => note.category === 'decisions'), 'Notes adapter did not produce the expected local note');
   check(window.__silentWebModulePromises.size === 1,
     'Concurrent core engines did not share one Wasm initialization');
-  return { sharedModuleCount: window.__silentWebModulePromises.size, notesAdapterReady: true };
+  window.storageSmokeStage = 'flush synthetic Whisper tail';
+  const { WhisperEngine } = await import(location.origin + '/whisper-engine.js');
+  const previousWorker = window.Worker;
+  let tailSamples = 0;
+  let saved = false;
+  window.Worker = class {
+    postMessage(message) {
+      if (message.type === 'init') setTimeout(() => this.onmessage?.({ data: { type: 'ready' } }), 0);
+      if (message.type === 'transcribe') {
+        tailSamples = message.audio.length;
+        setTimeout(() => this.onmessage?.({
+          data: { type: 'decoded', chunk: message.chunk, text: 'Synthetic final sentence.' },
+        }), 0);
+      }
+    }
+    terminate() {}
+  };
+  try {
+    const whisper = new WhisperEngine({ pkgUrl });
+    whisper.onFinal = async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      saved = true;
+    };
+    await whisper.load();
+    whisper.feed(new Float32Array(4000).fill(0.5));
+    await whisper.flush();
+    check(tailSamples === 4000 && saved, 'Whisper did not drain its synthetic tail and callback');
+    await whisper.stop();
+  } finally {
+    window.Worker = previousWorker;
+  }
+  return { sharedModuleCount: window.__silentWebModulePromises.size, notesAdapterReady: true, tailSamples };
 }
 
 export async function runMigration() {

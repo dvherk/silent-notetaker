@@ -37,10 +37,10 @@ Additional outstanding limitations:
   the API, and do not treat its export as a complete recovery guarantee.
 - Complete offline behavior, model download and inference, and Windows, Android,
   and iOS device support are not validated here.
-- Whisper/Moonshine buffers audio in fixed chunks; a trailing partial chunk is
-  not flushed at Stop, and pending worker results are not drained before the
-  meeting summary. Complete stop-boundary transcription and delayed results
-  across Continue are therefore not established.
+- Solo Whisper/Moonshine now attempts to drain speech-bearing partial audio and
+  pending transcript callbacks at Stop, with a 120-second failure deadline.
+  Real-model stop-boundary behavior remains unverified. The separate Dual-mode
+  pipeline's stop and refinement behavior has not been validated by this change.
 - Model license flags remain unverified; see `current-state.md` and
   `research/model-licenses.md`. Microsoft identity, calendar, destinations, and
   Work IQ are later milestones, not implemented by this increment.

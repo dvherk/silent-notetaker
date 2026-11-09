@@ -262,6 +262,29 @@ impl WhisperStreamPolicy {
         (commands, skips)
     }
 
+    /// Emit the final speech-bearing partial chunk after capture stops.
+    ///
+    /// This does not stop the policy: outstanding decoded chunks must still be
+    /// accepted before the caller resets or finalizes the stream.
+    pub fn flush_tail(&mut self) -> Option<HostCommand> {
+        if self.stopped || self.buffer.is_empty() {
+            return None;
+        }
+        let chunk = std::mem::take(&mut self.buffer);
+        let start = self.consumed_samples;
+        self.consumed_samples += chunk.len() as u64;
+        if !Self::has_speech(&chunk, self.config.vad_threshold) {
+            return None;
+        }
+        let index = self.next_chunk;
+        self.next_chunk += 1;
+        Some(HostCommand::Transcribe {
+            chunk: index,
+            start_ms: Self::samples_to_ms(start),
+            end_ms: Self::samples_to_ms(self.consumed_samples),
+        })
+    }
+
     /// Consume the host's decoded text for one chunk and apply the post-decode
     /// filters, returning the [`TextEvent`]s to surface.
     ///
@@ -321,10 +344,9 @@ impl WhisperStreamPolicy {
     }
 
     /// Emit the one-shot [`HostCommand::Finalize`] after stop (idempotent). The JS
-    /// worker has no trailing-buffer flush — leftover `audioBuffer` (< one chunk)
-    /// is simply dropped on `terminate` — so finalize emits *only* the teardown
-    /// command and never a final partial chunk. Returns `None` before stop or after
-    /// the finalize has already been emitted.
+    /// caller should invoke [`flush_tail`](Self::flush_tail) and drain pending
+    /// decodes before requesting stop. Returns `None` before stop or after the
+    /// finalize has already been emitted.
     pub fn drain_finalize(&mut self) -> Option<HostCommand> {
         if !self.stopped || self.finalized {
             return None;
@@ -603,6 +625,39 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn flush_tail_emits_partial_speech_once_and_preserves_decode() {
+        let cfg = WhisperStreamConfig {
+            chunk_samples: 16_000,
+            vad_threshold: 0.008,
+        };
+        let mut p = WhisperStreamPolicy::new(cfg);
+        assert_eq!(p.push_samples(&loud(16_000)).0.len(), 1);
+        assert!(p.push_samples(&loud(4_000)).0.is_empty());
+        assert_eq!(
+            p.flush_tail(),
+            Some(HostCommand::Transcribe {
+                chunk: 1,
+                start_ms: 1000,
+                end_ms: 1250,
+            })
+        );
+        assert_eq!(p.pending_samples(), 0);
+        assert_eq!(p.flush_tail(), None);
+        assert!(!p.on_decoded("A synthetic decision was made.").is_empty());
+    }
+
+    #[test]
+    fn flush_tail_skips_silence_and_does_not_run_after_stop() {
+        let mut p = WhisperStreamPolicy::new(TINY);
+        p.push_samples(&silent(2));
+        assert_eq!(p.flush_tail(), None);
+        assert_eq!(p.pending_samples(), 0);
+        p.push_samples(&loud(2));
+        p.request_stop();
+        assert_eq!(p.flush_tail(), None);
     }
 
     // ---- VAD gate ------------------------------------------------------------

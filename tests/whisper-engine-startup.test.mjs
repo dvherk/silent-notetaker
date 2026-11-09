@@ -27,11 +27,16 @@ function harness(t) {
   const url = 'test:whisper-startup';
   cache.set(url, Promise.resolve({
     WasmWhisperStream: class {
+      constructor() { this.commands = []; this.tail = null; }
+      pushSamples() { return JSON.stringify(this.commands.splice(0)); }
+      flushTail() { const tail = this.tail; this.tail = null; return JSON.stringify(tail); }
+      onDecoded(text) { return JSON.stringify([{ tag: 'final', payload: { text } }]); }
       requestStop() {}
       drainFinalize() { return 'null'; }
+      reset() {}
       free() {}
     },
-    WasmCorrections: class { free() {} },
+    WasmCorrections: class { apply(text) { return text; } free() {} },
   }));
   return { engine: new WhisperEngine({ pkgUrl: url }), workers, cache, url };
 }
@@ -143,6 +148,90 @@ test('cancelling while Wasm initialization is pending cannot start a worker late
   assert.equal(engine._mod, replacement);
   assert.equal(engine.ready, true);
   await engine.stop();
+});
+
+test('flush sends the partial tail and waits for all transcript callbacks', async t => {
+  const { engine, workers } = harness(t);
+  const loading = engine.load();
+  const worker = await waitForWorker(workers);
+  worker.emit({ type: 'ready' });
+  await loading;
+  engine._chunkSamples = 16_000;
+  engine._policy.commands.push({ cmd: 'transcribe', chunk: 0, start_ms: 0, end_ms: 1000 });
+  engine.feed(new Float32Array(16_000).fill(0.5));
+  engine.feed(new Float32Array(4_000).fill(0.5));
+  engine._policy.tail = { cmd: 'transcribe', chunk: 1, start_ms: 1000, end_ms: 1250 };
+  let release;
+  const callbackGate = new Promise(resolve => { release = resolve; });
+  const texts = [];
+  engine.onFinal = async text => { texts.push(text); await callbackGate; };
+  let finished = false;
+  const flushing = engine.flush().then(() => { finished = true; });
+  const sent = worker.messages.filter(message => message.type === 'transcribe');
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].audio.length, 4_000);
+  worker.emit({ type: 'decoded', chunk: 0, text: 'First synthetic sentence.' });
+  worker.emit({ type: 'decoded', chunk: 1, text: 'Final synthetic sentence.' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finished, false);
+  assert.deepEqual(texts, ['First synthetic sentence.', 'Final synthetic sentence.']);
+  release();
+  await flushing;
+  assert.equal(engine._pending.size, 0);
+  await engine.stop();
+});
+
+test('flush reports a failed chunk rather than claiming success', async t => {
+  const { engine, workers } = harness(t);
+  const loading = engine.load();
+  const worker = await waitForWorker(workers);
+  worker.emit({ type: 'ready' });
+  await loading;
+  engine._mirror = new Float32Array(100).fill(0.5);
+  engine._policy.tail = { cmd: 'transcribe', chunk: 0, start_ms: 0, end_ms: 6 };
+  const flushing = engine.flush();
+  worker.emit({ type: 'error', chunk: 0, message: 'synthetic decode failure' });
+  await assert.rejects(flushing, /transcription chunks failed/);
+  assert.equal(engine._pending.size, 0);
+  await engine.stop();
+});
+
+test('a desynchronized final audio buffer stops the worker and reports failure', async t => {
+  const { engine, workers } = harness(t);
+  const loading = engine.load();
+  const worker = await waitForWorker(workers);
+  worker.emit({ type: 'ready' });
+  await loading;
+  engine._mirror = new Float32Array(10).fill(0.5);
+  engine._policy.tail = { cmd: 'transcribe', chunk: 0, start_ms: 1000, end_ms: 1001 };
+  await assert.rejects(engine.flush(), /transcription chunks failed/);
+  assert.equal(worker.terminated, true);
+  assert.equal(engine.ready, false);
+});
+
+test('a worker crash still waits for an already-started transcript callback', async t => {
+  const { engine, workers } = harness(t);
+  const loading = engine.load();
+  const worker = await waitForWorker(workers);
+  worker.emit({ type: 'ready' });
+  await loading;
+  engine._chunkSamples = 16_000;
+  engine._policy.commands.push({ cmd: 'transcribe', chunk: 0, start_ms: 0, end_ms: 1000 });
+  engine.feed(new Float32Array(16_000).fill(0.5));
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  engine.onFinal = () => gate;
+  worker.emit({ type: 'decoded', chunk: 0, text: 'Synthetic delayed text.' });
+  worker.fail('synthetic worker crash');
+  await assert.rejects(engine.load(), /still being saved/);
+  let settled = false;
+  const flushing = engine.flush().finally(() => { settled = true; });
+  const rejected = assert.rejects(flushing, /transcription chunks failed/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  release();
+  await rejected;
+  assert.equal(engine._pending.size, 0);
 });
 
 test('the app loads the transcription model before requesting the microphone', async () => {

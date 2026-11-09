@@ -29,8 +29,10 @@ adapter or comparative benchmark is claimed here.
 
 The Whisper adapter now waits for its model worker's ready event before the app
 requests microphone access. Load failures and worker crashes surface as errors;
-a stopped or failed startup can be retried. Its stop-time partial audio and
-pending-result handling remain limited as described in `known-limitations.md`.
+a stopped or failed startup can be retried. For solo Whisper/Moonshine, Stop
+drains a speech-bearing partial chunk and waits for pending transcript callbacks
+before final notes and summary, subject to a 120-second failure deadline.
+Real-model and Dual-mode stop behavior remain unverified.
 
 ## Speaker processing
 

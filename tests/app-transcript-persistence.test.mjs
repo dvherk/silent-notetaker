@@ -26,7 +26,7 @@ async function harness(failWrite) {
   app.meetingId = 42;
   app.tm = { engine: 'moonshine' };
   app.renderTranscriptItem = (...args) => { app.rendered = args; };
-  return { app, notices, events };
+  return { app, notices, events, context };
 }
 
 test('a transcript write failure remains visible without claiming it was committed', async () => {
@@ -45,4 +45,19 @@ test('a successful transcript write still emits and renders the committed segmen
   assert.equal(app.rendered[1], 'discussion text');
   assert.equal(events[0].type, 'transcript.update');
   assert.equal(notices.length, 0);
+});
+
+test('a late transcript write stays with its original meeting and does not render in a new one', async () => {
+  const { app, context, events } = await harness(false);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ids = [];
+  context.storage.addTranscriptChunk = async id => { ids.push(id); await gate; };
+  const writing = app.handleFinal('synthetic late transcript');
+  app.meetingId = 99;
+  release();
+  await writing;
+  assert.deepEqual(ids, [42]);
+  assert.equal(app.rendered, undefined);
+  assert.equal(events.length, 0);
 });

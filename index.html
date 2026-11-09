@@ -2280,7 +2280,10 @@ async function _ensureStorageLoaded() {
     await sharedStorageEngine.load();
     _storageEngineReady = true;
     return sharedStorageEngine;
-  })();
+  })().catch(error => {
+    _storageLoadPromise = null;
+    throw error;
+  });
   return _storageLoadPromise;
 }
 

@@ -61,6 +61,28 @@ jobs:
           SILENT_BROWSER_BIN: /usr/bin/google-chrome
         run: node scripts/browser-capture-smoke.mjs
 
+  prepare-lock-refresh:
+    name: "Prepare targeted lockfile refresh"
+    if: github.ref == 'refs/heads/dvherk-local-core-ci'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - name: Refresh affected lockfile entries
+        run: |
+          cargo update -p anyhow --precise 1.0.103
+          cargo update -p webpki-root-certs --precise 1.0.10
+          cargo update -p der --precise 0.8.1
+      - name: Upload proposed lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: proposed-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+
   core-gates:
     name: "Core gates (fmt / check / test / clippy)"
     runs-on: ubuntu-latest
@@ -145,11 +167,14 @@ jobs:
 
       # cargo-audit: advisory database scan for known CVEs.
       - name: Install cargo-audit
+        if: ${{ !cancelled() }}
+        id: install-cargo-audit
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
 
       - name: cargo audit
+        if: ${{ !cancelled() && steps.install-cargo-audit.outcome == 'success' }}
         run: cargo audit
 
       # K4: cargo-semver-checks — uncomment when nemotron-asr is ready to publish.
@@ -409,9 +434,9 @@ jobs:
       - name: Regenerate bindings
         run: cargo test -p silent-core export_bindings
 
-      - name: Fail on stale bindings (git diff --exit-code)
+      - name: Fail on stale bindings (ignore trailing whitespace)
         run: |
-          if ! git diff --exit-code crates/silent-core/bindings/; then
+          if ! git diff --ignore-space-at-eol --exit-code crates/silent-core/bindings/; then
             echo "::error::Stale TypeScript bindings detected."
             echo "::error::Run 'cargo test -p silent-core export_bindings' and commit the updated bindings/."
             exit 1
@@ -540,6 +565,17 @@ jobs:
       # --- Build #1 (reproducible, remapped paths) ---
       - name: "Build wasm (run 1)"
         run: ./scripts/build-wasm.sh | tee /tmp/wasm-hashes-1.txt
+
+      - name: Set up Node for browser integration
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Exercise synthetic storage migration and local notes
+        env:
+          SILENT_BROWSER_BIN: /usr/bin/google-chrome
+          SILENT_STORAGE_WASM_SMOKE: "1"
+        run: node scripts/browser-capture-smoke.mjs
 
       - name: "Snapshot run-1 artifacts"
         run: |

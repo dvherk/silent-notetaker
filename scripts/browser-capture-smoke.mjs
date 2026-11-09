@@ -26,6 +26,17 @@ async function waitFor(fn, description, timeoutMs = 20_000) {
 
 async function run(browserPath) {
   const capture = await readFile(new URL('../apps/web/js/capture.js', import.meta.url));
+  const storageSmoke = process.env.SILENT_STORAGE_WASM_SMOKE === '1';
+  const extraAssets = new Map();
+  if (storageSmoke) {
+    for (const [url, path, type] of [
+      ['/storage-fixture.js', './browser-storage-fixture.mjs', 'text/javascript'],
+      ['/crates/silent-web/pkg/silent_web.js', '../crates/silent-web/pkg/silent_web.js', 'text/javascript'],
+      ['/crates/silent-web/pkg/silent_web_bg.wasm', '../crates/silent-web/pkg/silent_web_bg.wasm', 'application/wasm'],
+    ]) {
+      extraAssets.set(url, { content: await readFile(new URL(path, import.meta.url)), type });
+    }
+  }
   const profile = await mkdtemp(join(tmpdir(), 'silent-capture-smoke-'));
   const server = createServer((request, response) => {
     response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
@@ -38,6 +49,10 @@ async function run(browserPath) {
     } else if (request.url === '/capture.js') {
       response.writeHead(200, { 'Content-Type': 'text/javascript' });
       response.end(capture);
+    } else if (extraAssets.has(request.url)) {
+      const asset = extraAssets.get(request.url);
+      response.writeHead(200, { 'Content-Type': asset.type });
+      response.end(asset.content);
     } else {
       response.writeHead(404);
       response.end();
@@ -149,6 +164,27 @@ async function run(browserPath) {
     assert.equal(second.trackState, 'ended');
     assert.equal(second.staleSamplesIgnored, true);
     console.log(JSON.stringify({ first, second }, null, 2));
+    if (storageSmoke) {
+      await connection.send('Network.emulateNetworkConditions', {
+        offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+      });
+      const migration = await evaluate(connection,
+        "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runMigration())");
+      await connection.send('Page.reload');
+      await waitFor(async () => {
+        try {
+          const page = await evaluate(connection, '({ href: location.href, ready: document.readyState })');
+          return page.href === url && page.ready === 'complete';
+        } catch (error) {
+          if (/execution context/i.test(error.message)) return false;
+          throw error;
+        }
+      }, 'storage smoke page reload');
+      const reload = await evaluate(connection,
+        "import(location.origin + '/storage-fixture.js').then(fixture => fixture.verifyAfterReload())");
+      console.log(JSON.stringify({ migration, reload }, null, 2));
+      console.log('Synthetic IndexedDB migration, local trigger-note generation, and reload passed.');
+    }
     console.log('Browser capture smoke passed with a synthetic microphone; no ASR or real microphone was tested.');
   } finally {
     if (!connection && debugPort) {

@@ -27,6 +27,11 @@ replace those paths until a common adapter is wired to real engines and
 regression-tested with the generated Wasm and actual models. No VibeVoice ASR
 adapter or comparative benchmark is claimed here.
 
+The Whisper adapter now waits for its model worker's ready event before the app
+requests microphone access. Load failures and worker crashes surface as errors;
+a stopped or failed startup can be retried. Its stop-time partial audio and
+pending-result handling remain limited as described in `known-limitations.md`.
+
 ## Speaker processing
 
 `diarization-engine.js` wraps the TitaNet embedding and Rust speaker tracker.

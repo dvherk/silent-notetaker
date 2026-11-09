@@ -597,6 +597,14 @@ jobs:
           SILENT_APP_SHELL_SMOKE: "1"
         run: node scripts/browser-capture-smoke.mjs
 
+      - name: Exercise Whisper adapter with a synthetic model worker
+        id: whisper-worker-smoke
+        continue-on-error: true
+        env:
+          SILENT_BROWSER_BIN: /usr/bin/google-chrome
+          SILENT_WHISPER_WORKER_SMOKE: "1"
+        run: node scripts/browser-capture-smoke.mjs
+
       - name: "Snapshot run-1 artifacts"
         run: |
           mkdir -p /tmp/run1
@@ -630,7 +638,7 @@ jobs:
           echo "Deterministic: both wasm artifacts are byte-identical across two clean builds."
 
       - name: Enforce browser integration result
-        if: ${{ !cancelled() && (steps.storage-smoke.outcome == 'failure' || steps.app-shell-smoke.outcome == 'failure') }}
+        if: ${{ !cancelled() && (steps.storage-smoke.outcome == 'failure' || steps.app-shell-smoke.outcome == 'failure' || steps.whisper-worker-smoke.outcome == 'failure') }}
         run: |
           echo "::error::A synthetic browser integration check failed."
           exit 1

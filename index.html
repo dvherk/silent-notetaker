@@ -3776,23 +3776,6 @@ class TranscriptionManager {
 
   async startMoonshine() {
     this.engine = 'moonshine';
-    this.onStatus('Requesting microphone...', 0);
-
-    // Request mic
-    try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      });
-    } catch (err) {
-      throw new Error(`Microphone access denied: ${err.message}`);
-    }
-
     // Rust-policy-driven Whisper/Moonshine engine (strangler-fig REPLACE): the
     // chunk/VAD/hallucination/dedup loop is `WhisperStreamPolicy` in Rust; this
     // loader drives a thin transformers.js executor worker. Replaces the inline
@@ -3812,10 +3795,36 @@ class TranscriptionManager {
     // Word corrections compose downstream of dedup (same pipeline position).
     try { this.whisper.setCorrections(Object.entries((settings.corrections || {})).map(([wrong, right]) => ({ wrong, right }))); } catch (_) {}
 
-    // Audio capture (AudioWorklet, 16kHz) → the Rust policy decides chunks.
-    await this._startAudioCapture((samples) => {
-      this.whisper.feed(samples);
-    });
+    try {
+      this.onStatus('Requesting microphone...', 0);
+      try {
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
+        });
+      } catch (err) {
+        throw new Error(`Microphone access denied: ${err.message}`);
+      }
+
+      // Audio capture (AudioWorklet, 16kHz) → the Rust policy decides chunks.
+      await this._startAudioCapture((samples) => {
+        this.whisper.feed(samples);
+      });
+    } catch (error) {
+      const cleanupErrors = [];
+      try { this.stop({ finalize: false }); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+      try { await this.whisper.stop(); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+      this.whisper = null;
+      if (cleanupErrors.length) {
+        throw new AggregateError([error, ...cleanupErrors], `${error.message}; transcription cleanup failed`);
+      }
+      throw error;
+    }
   }
 
   async startSenseVoice() {
@@ -4689,7 +4698,10 @@ class TranscriptionManager {
     this.stop();
     if (this.senseVoice) { this.senseVoice.destroy(); this.senseVoice = null; }
     if (this.dual) { this.dual.stop?.(); this.dual = null; }
-    if (this.whisper) { this.whisper.stop?.(); this.whisper = null; }
+    if (this.whisper) {
+      this.whisper.stop?.()?.catch(error => console.warn('[rust-whisper] cleanup failed:', error));
+      this.whisper = null;
+    }
     if (this.worker) { this.worker.postMessage({ type: 'terminate' }); this.worker = null; }
     // Voxtral model stays in memory until page unload (no explicit destroy API)
     this.voxtralModel = null;
@@ -5168,6 +5180,17 @@ class App {
 
       engineStartAttempted = true;
       if (canResume) {
+        if (this.tm.whisper && !this.tm.whisper.ready) {
+          const settings = loadSettings();
+          await this.tm.whisper.load({
+            model: settings.model || 'onnx-community/whisper-large-v3-turbo',
+            dtype: settings.dtype || 'fp32',
+            device: settings.device || 'wasm',
+          });
+          this.tm.whisper.setCorrections(
+            Object.entries(settings.corrections || {}).map(([wrong, right]) => ({ wrong, right }))
+          );
+        }
         // Models loaded — re-create audio pipeline and resume
         // Open mic for resume; store on tm AND propagate to capture so _startAudioCapture
         // can reuse the already-opened stream (avoids a double getUserMedia prompt).

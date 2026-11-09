@@ -27,7 +27,8 @@ async function waitFor(fn, description, timeoutMs = 20_000) {
 
 async function run(browserPath) {
   const capture = await readFile(new URL('../apps/web/js/capture.js', import.meta.url));
-  const appShellSmoke = process.env.SILENT_APP_SHELL_SMOKE === '1';
+  const whisperWorkerSmoke = process.env.SILENT_WHISPER_WORKER_SMOKE === '1';
+  const appShellSmoke = process.env.SILENT_APP_SHELL_SMOKE === '1' || whisperWorkerSmoke;
   const storageSmoke = process.env.SILENT_STORAGE_WASM_SMOKE === '1' || appShellSmoke;
   const appShell = appShellSmoke ? await readFile(new URL('../index.html', import.meta.url)) : null;
   const extraAssets = new Map();
@@ -166,18 +167,34 @@ async function run(browserPath) {
           _ensureStorageLoaded(), _ensureNotesLoaded(),
           _ensureFinalNotesPolicy(), _ensureExportsLoaded(),
           import('./apps/web/js/capture.js'),
+          ${whisperWorkerSmoke ? "import('./whisper-engine.js')" : 'Promise.resolve()'},
         ]);
         if (!app.session.ready || !crossOriginIsolated) throw new Error('App shell did not initialize');
-        saveSettings({ ...loadSettings(), model: 'nemotron', qwenModel: 'off',
+        saveSettings({ ...loadSettings(), model: ${JSON.stringify(whisperWorkerSmoke ? 'onnx-community/whisper-tiny.en' : 'nemotron')}, qwenModel: 'off',
           smartQuestions: false, screenshots: false, claudeBridge: false });
         app._syncSessionConfig();
         window.appSmokeSamples = 0;
-        TranscriptionManager.prototype.startNemotron = async function() {
-          this.engine = 'nemotron';
-          await this._startAudioCapture(samples => {
-            if (samples.length) window.appSmokeSamples++;
-          });
-        };
+        ${whisperWorkerSmoke ? `
+          window.appSmokeDecoded = 0;
+          window.Worker = class {
+            postMessage(message) {
+              if (message.type === 'init') setTimeout(() => this.onmessage?.({ data: { type: 'ready' } }), 20);
+              if (message.type === 'transcribe') setTimeout(() => {
+                window.appSmokeDecoded++;
+                this.onmessage?.({ data: { type: 'decoded', chunk: message.chunk,
+                  text: 'After a long debate we have decided to ship on Friday.' } });
+              }, 20);
+            }
+            terminate() {}
+          };
+        ` : `
+          TranscriptionManager.prototype.startNemotron = async function() {
+            this.engine = 'nemotron';
+            await this._startAudioCapture(samples => {
+              if (samples.length) window.appSmokeSamples++;
+            });
+          };
+        `}
       })()`);
     }
 
@@ -239,11 +256,26 @@ async function run(browserPath) {
         const track = app.tm.mediaStream.getAudioTracks()[0];
         await new Promise((resolve, reject) => {
           const timer = setInterval(() => {
-            if (window.appSmokeSamples > 0) { clearInterval(timer); clearTimeout(timeout); resolve(); }
+            if (${whisperWorkerSmoke ? 'window.appSmokeDecoded > 0' : 'window.appSmokeSamples > 0'}) {
+              clearInterval(timer); clearTimeout(timeout); resolve();
+            }
           }, 20);
-          const timeout = setTimeout(() => { clearInterval(timer); reject(new Error('No app fake microphone samples')); }, 12000);
+          const timeout = setTimeout(() => { clearInterval(timer); reject(new Error('No app synthetic audio result')); }, 12000);
         });
-        await app.handleFinal('After a long debate we have decided to ship on Friday.');
+        ${whisperWorkerSmoke ? `
+          await new Promise((resolve, reject) => {
+            const timer = setInterval(async () => {
+              try {
+                if ((await storage.meetingDetail(app.meetingId)).chunks.length > 0) {
+                  clearInterval(timer); clearTimeout(timeout); resolve();
+                }
+              } catch (error) { clearInterval(timer); clearTimeout(timeout); reject(error); }
+            }, 20);
+            const timeout = setTimeout(() => { clearInterval(timer); reject(new Error('Synthetic transcript was not persisted')); }, 12000);
+          });
+        ` : `
+          await app.handleFinal('After a long debate we have decided to ship on Friday.');
+        `}
         await app.stop();
         const detail = await storage.meetingDetail(app.meetingId);
         if (track.readyState !== 'ended' || detail.chunks.length !== 1 ||
@@ -251,10 +283,11 @@ async function run(browserPath) {
           throw new Error('Offline app capture, transcript or local note did not persist');
         }
         return { offline: !navigator.onLine, samples: window.appSmokeSamples,
+          syntheticDecodes: window.appSmokeDecoded || 0,
           trackState: track.readyState, chunks: detail.chunks.length, notes: detail.notes.length };
       })()`);
       console.log(JSON.stringify({ appRun }, null, 2));
-      console.log('Offline app-shell smoke passed with synthetic capture and injected transcript, not a real ASR model.');
+      console.log('Offline app-shell smoke passed with synthetic capture and a mocked transcript, not a real ASR model.');
     }
     if (storageSmoke) {
       await connection.send('Network.emulateNetworkConditions', {

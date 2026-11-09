@@ -44,28 +44,9 @@
  * executor, the policy is `WasmWhisperStream`.
  */
 
-const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
+import { loadSilentWebModule } from './silent-web-loader.js';
 
-/**
- * Shared, cross-loader module-init promise for the wasm-pack pkg (see
- * session-engine.js for the full rationale): one `import()` + `default()` across
- * ALL engine loaders, keyed by pkg URL, so a concurrent boot-time init never
- * double-initializes the wasm binary and corrupts the heap.
- */
-function _loadModule(pkgUrl) {
-  const w = (typeof window !== 'undefined') ? window : globalThis;
-  const cache = (w.__silentWebModulePromises ||= new Map());
-  let p = cache.get(pkgUrl);
-  if (!p) {
-    p = (async () => {
-      const mod = await import(pkgUrl);
-      await mod.default();   // initialises the wasm binary exactly once
-      return mod;
-    })();
-    cache.set(pkgUrl, p);
-  }
-  return p;
-}
+const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
 
 // The executor worker source now lives in the permanent transformers-host.js
 // module so any future js-transformers host can share it. Re-exported here
@@ -94,6 +75,10 @@ export class WhisperEngine {
     this._worker = null;
     this._workerUrl = null;
     this._loadPromise = null;
+    this._loadGeneration = 0;
+    this._cancelLoad = null;
+    this._initResolve = null;
+    this._initReject = null;
     this.ready = false;
     // Pending chunk spans, keyed by chunk index, so a decoded reply can be
     // range-stamped with the exact span the policy issued the command for.
@@ -110,32 +95,67 @@ export class WhisperEngine {
     this._chunkSamples = 16000 * (opts.dualLeg ? 3 : 5);
   }
 
-  /** Load the wasm module + spawn the executor worker. Idempotent. */
+  /** Load the Wasm policy and wait for the worker's model-ready event. */
   load(config = {}) {
     if (this._loadPromise) return this._loadPromise;
-    this._loadPromise = (async () => {
-      this._mod = await _loadModule(this.pkgUrl);
+    const generation = ++this._loadGeneration;
+    const cancellation = new Promise((_, reject) => { this._cancelLoad = reject; });
+    const operation = (async () => {
+      const mod = await loadSilentWebModule(this.pkgUrl);
+      if (generation !== this._loadGeneration) throw new Error('Whisper initialization cancelled');
+      this._mod = mod;
       const { WasmWhisperStream, WasmCorrections } = this._mod;
       this._policy = this.dualLeg ? WasmWhisperStream.moonshineDual() : new WasmWhisperStream();
       this._corrections = new WasmCorrections();
 
       // Spawn the executor worker (model + raw transcribe only).
       this._workerUrl = URL.createObjectURL(new Blob([EXECUTOR_WORKER_SRC], { type: 'application/javascript' }));
-      this._worker = new Worker(this._workerUrl, { type: 'module' });
-      this._worker.onmessage = (e) => this._onWorkerMessage(e.data);
-
-      if (config.model) {
-        this._worker.postMessage({ type: 'configure', config: {
-          model: config.model,
-          dtype: config.dtype || 'fp32',
-          device: config.device || 'wasm',
-          language: config.language || 'en',
-        }});
-      }
-      this._worker.postMessage({ type: 'init' });
+      const worker = this._worker = new Worker(this._workerUrl, { type: 'module' });
+      worker.onmessage = event => {
+        if (this._worker === worker) this._onWorkerMessage(event.data);
+      };
+      worker.onerror = event => {
+        if (this._worker !== worker) return;
+        event.preventDefault();
+        this._onWorkerError(event.message || 'Transcription worker failed', true);
+      };
+      worker.onmessageerror = () => {
+        if (this._worker === worker) this._onWorkerError('Transcription worker message could not be decoded', true);
+      };
+      await new Promise((resolve, reject) => {
+        this._initResolve = resolve;
+        this._initReject = reject;
+        try {
+          if (config.model) {
+            worker.postMessage({ type: 'configure', config: {
+              model: config.model,
+              dtype: config.dtype || 'fp32',
+              device: config.device || 'wasm',
+              language: config.language || 'en',
+            }});
+          }
+          worker.postMessage({ type: 'init' });
+        } catch (error) {
+          this._initResolve = null;
+          this._initReject = null;
+          reject(error);
+        }
+      });
+      if (generation !== this._loadGeneration) throw new Error('Whisper initialization cancelled');
+      this._cancelLoad = null;
       this.ready = true;
       console.log(`[rust-whisper] WhisperEngine ready (Rust policy: chunk/VAD/hallucination/dedup; worker = model executor${this.dualLeg ? '; Moonshine-Dual 3s cadence' : ''})`);
     })();
+    this._loadPromise = Promise.race([operation, cancellation]).catch(error => {
+      if (generation === this._loadGeneration) {
+        try {
+          this._teardown();
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Whisper initialization and cleanup failed');
+        }
+      }
+      throw error;
+    });
     return this._loadPromise;
   }
 
@@ -195,12 +215,19 @@ export class WhisperEngine {
 
   /** Request stop: drain the worker, terminate, finalize the policy. */
   async stop() {
-    if (this._policy) {
-      this._policy.requestStop();
-      const fin = JSON.parse(this._policy.drainFinalize());
-      if (fin && fin.cmd === 'finalize') this._worker?.postMessage({ type: 'terminate' });
+    const errors = [];
+    try {
+      if (this._policy) {
+        this._policy.requestStop();
+        const fin = JSON.parse(this._policy.drainFinalize());
+        if (fin && fin.cmd === 'finalize') this._worker?.postMessage({ type: 'terminate' });
+      }
+    } catch (error) {
+      errors.push(error);
     }
-    this._teardown();
+    try { this._teardown(); } catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Whisper stop and cleanup failed');
   }
 
   reset() {
@@ -215,8 +242,15 @@ export class WhisperEngine {
     if (type === 'partial') { this.onPartial?.(data.text); return; }
     if (type === 'status')  { this.onStatus?.(data.message, null); return; }
     if (type === 'progress'){ this.onStatus?.(null, data.value); return; }
-    if (type === 'ready')   { this.onStatus?.(this.dualLeg ? 'Moonshine ready, loading SenseVoice...' : 'Moonshine ready — fully local', this.dualLeg ? 30 : 100); return; }
-    if (type === 'error')   { this.onStatus?.('Error: ' + data.message, null); return; }
+    if (type === 'ready') {
+      const resolve = this._initResolve;
+      this._initResolve = null;
+      this._initReject = null;
+      resolve?.();
+      this.onStatus?.(this.dualLeg ? 'Moonshine ready, loading SenseVoice...' : 'Moonshine ready — fully local', this.dualLeg ? 30 : 100);
+      return;
+    }
+    if (type === 'error') { this._onWorkerError(data.message); return; }
     if (type === 'decoded') {
       // Run the decoded text back through the Rust policy (hallucination + dedup).
       const span = this._spans.get(data.chunk) || { start_ms: 0, end_ms: 0 };
@@ -235,11 +269,55 @@ export class WhisperEngine {
     }
   }
 
+  _onWorkerError(message, fatal = false) {
+    const reject = this._initReject;
+    this._initResolve = null;
+    this._initReject = null;
+    if (reject) reject(new Error(message || 'Transcription worker failed'));
+    else {
+      if (fatal) {
+        try {
+          this._teardown();
+        } catch (cleanupError) {
+          console.error('[rust-whisper] worker cleanup failed:', cleanupError);
+          this.onStatus?.('Error: ' + (message || 'Transcription worker failed') + '; cleanup failed', null);
+          return;
+        }
+      }
+      this.onStatus?.('Error: ' + (message || 'Transcription worker failed'), null);
+    }
+  }
+
   _teardown() {
-    try { this._worker?.terminate(); } catch (_) {}
+    this._loadGeneration++;
+    const cancel = this._cancelLoad;
+    this._cancelLoad = null;
+    cancel?.(new Error('Whisper initialization cancelled'));
+    const reject = this._initReject;
+    this._initResolve = null;
+    this._initReject = null;
+    reject?.(new Error('Whisper initialization cancelled'));
+    const worker = this._worker;
+    const workerUrl = this._workerUrl;
+    const policy = this._policy;
+    const corrections = this._corrections;
     this._worker = null;
-    if (this._workerUrl) { URL.revokeObjectURL(this._workerUrl); this._workerUrl = null; }
+    this._workerUrl = null;
+    this._policy = null;
+    this._corrections = null;
+    this._loadPromise = null;
+    this._spans.clear();
+    this._mirror = new Float32Array(0);
+    this._mirrorBaseAbs = 0;
     this.ready = false;
+    const errors = [];
+    try { worker?.terminate(); } catch (error) { errors.push(error); }
+    try { if (workerUrl) URL.revokeObjectURL(workerUrl); } catch (error) { errors.push(error); }
+    for (const resource of [policy, corrections]) {
+      try { resource?.free?.(); } catch (error) { errors.push(error); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Whisper cleanup failed');
   }
 }
 

@@ -37,6 +37,10 @@ Additional outstanding limitations:
   the API, and do not treat its export as a complete recovery guarantee.
 - Complete offline behavior, model download and inference, and Windows, Android,
   and iOS device support are not validated here.
+- Whisper/Moonshine buffers audio in fixed chunks; a trailing partial chunk is
+  not flushed at Stop, and pending worker results are not drained before the
+  meeting summary. Complete stop-boundary transcription and delayed results
+  across Continue are therefore not established.
 - Model license flags remain unverified; see `current-state.md` and
   `research/model-licenses.md`. Microsoft identity, calendar, destinations, and
   Work IQ are later milestones, not implemented by this increment.

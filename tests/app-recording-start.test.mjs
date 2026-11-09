@@ -84,7 +84,7 @@ async function harness({ warm = false, failStorage = false, succeed = false } = 
   } else {
     app.tm = null;
   }
-  return { app, updates, events, messages, element };
+  return { app, updates, events, messages, element, context };
 }
 
 test('failed cold capture releases resources and restores an idle session', async () => {
@@ -148,6 +148,30 @@ test('a later start retries a failed session-engine initialization', async () =>
   assert.equal(retries, 1);
   assert.equal(app.session.state, 'recording');
   assert.equal(element('stopBtn').style.display, 'inline-flex');
+});
+
+test('resume reloads a failed Whisper worker before opening the microphone', async () => {
+  const { app, context } = await harness({ warm: true });
+  const steps = [];
+  context.navigator.mediaDevices.getUserMedia = async () => {
+    steps.push('microphone');
+    return { getTracks: () => [] };
+  };
+  app.tm = {
+    engine: 'moonshine',
+    whisper: {
+      ready: false,
+      async load() { steps.push('load'); this.ready = true; },
+      setCorrections() {},
+      reset() {},
+      feed() {},
+    },
+    async _startAudioCapture() { steps.push('capture'); },
+    stop() {},
+  };
+  await app.start();
+  assert.equal(app.session.state, 'recording');
+  assert.deepEqual(steps, ['load', 'microphone', 'capture']);
 });
 
 test('a duplicate start does not hide the stop control of an active recording', async () => {

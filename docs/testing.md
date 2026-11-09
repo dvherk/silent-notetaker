@@ -16,6 +16,8 @@ Acceptance criteria for this increment:
    behavior; browser, Wasm, storage and device limitations remain explicit.
 6. Session, notes, storage and speaker-model initialization can recover from
    transient failures without corrupting shared Wasm initialization.
+7. Whisper/Moonshine startup waits for model readiness before opening the
+   microphone; failures and cancelled initialization release acquired resources.
 
 Local results on 2026-11-06, with later hosted checks below:
 
@@ -78,6 +80,11 @@ Hosted Linux and local browser evidence:
   fixture loads the session, notes, and storage adapters concurrently against a
   hosted Wasm artifact and verifies that they share one initialized module and
   that the local trigger-note adapter responds.
+- **Passed locally:** 68 Node tests after Whisper startup changes. A separate
+  offline Edge scenario exercised the actual app, capture graph, Whisper adapter
+  and Wasm policy using a synthetic microphone and a mocked model worker. It
+  checked synthetic transcript and local-note persistence after reload. It did
+  not load a model or test recognition quality.
 - **Passed locally:** the actual app shell started and stopped with a synthetic
   microphone after its dependencies were preloaded and the network was
   simulated offline. A synthetic transcript injected into the app produced a
@@ -122,6 +129,8 @@ For the bounded app-shell smoke, use a built package as above and replace
 `SILENT_STORAGE_WASM_SMOKE` with `SILENT_APP_SHELL_SMOKE = '1'`. The harness
 uses an isolated temporary browser profile, a synthetic microphone and an
 injected synthetic transcript; it does not capture physical audio.
+Set `SILENT_WHISPER_WORKER_SMOKE = '1'` instead to use the real Whisper
+adapter and Wasm policy with a synthetic model worker.
 
 The fixture directly calls the Wasm migration API; the application does not
 call it or offer its emitted backup. It also checks the separate, direct

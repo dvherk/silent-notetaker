@@ -589,6 +589,14 @@ jobs:
           SILENT_STORAGE_WASM_SMOKE: "1"
         run: node scripts/browser-capture-smoke.mjs
 
+      - name: Exercise offline app shell with synthetic audio and transcript
+        id: app-shell-smoke
+        continue-on-error: true
+        env:
+          SILENT_BROWSER_BIN: /usr/bin/google-chrome
+          SILENT_APP_SHELL_SMOKE: "1"
+        run: node scripts/browser-capture-smoke.mjs
+
       - name: "Snapshot run-1 artifacts"
         run: |
           mkdir -p /tmp/run1
@@ -622,9 +630,9 @@ jobs:
           echo "Deterministic: both wasm artifacts are byte-identical across two clean builds."
 
       - name: Enforce browser integration result
-        if: ${{ !cancelled() && steps.storage-smoke.outcome == 'failure' }}
+        if: ${{ !cancelled() && (steps.storage-smoke.outcome == 'failure' || steps.app-shell-smoke.outcome == 'failure') }}
         run: |
-          echo "::error::Synthetic browser storage integration failed."
+          echo "::error::A synthetic browser integration check failed."
           exit 1
 
       # --- Publish the manifest (PRD R8 requirement) ---

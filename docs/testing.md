@@ -78,6 +78,13 @@ Hosted Linux and local browser evidence:
   fixture loads the session, notes, and storage adapters concurrently against a
   hosted Wasm artifact and verifies that they share one initialized module and
   that the local trigger-note adapter responds.
+- **Passed locally:** the actual app shell started and stopped with a synthetic
+  microphone after its dependencies were preloaded and the network was
+  simulated offline. A synthetic transcript injected into the app produced a
+  local decision note; the meeting, transcript and note persisted after network
+  restoration and reload. This substitutes the transcription engine and does not
+  test ASR inference, model availability, cold offline startup, or full offline
+  functionality.
 
 The local-core increment is therefore **partial, not a completed Milestone 1**.
 The full acceptance gate still requires a verified in-app backup/migration path,
@@ -110,6 +117,11 @@ $env:SILENT_STORAGE_WASM_SMOKE = '1'
 $env:SILENT_WEB_PKG_DIR = '<path to silent-web package directory>'
 node scripts\browser-capture-smoke.mjs
 ```
+
+For the bounded app-shell smoke, use a built package as above and replace
+`SILENT_STORAGE_WASM_SMOKE` with `SILENT_APP_SHELL_SMOKE = '1'`. The harness
+uses an isolated temporary browser profile, a synthetic microphone and an
+injected synthetic transcript; it does not capture physical audio.
 
 The fixture directly calls the Wasm migration API; the application does not
 call it or offer its emitted backup. It also checks the separate, direct

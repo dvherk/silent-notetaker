@@ -27,7 +27,9 @@ async function waitFor(fn, description, timeoutMs = 20_000) {
 
 async function run(browserPath) {
   const capture = await readFile(new URL('../apps/web/js/capture.js', import.meta.url));
-  const storageSmoke = process.env.SILENT_STORAGE_WASM_SMOKE === '1';
+  const appShellSmoke = process.env.SILENT_APP_SHELL_SMOKE === '1';
+  const storageSmoke = process.env.SILENT_STORAGE_WASM_SMOKE === '1' || appShellSmoke;
+  const appShell = appShellSmoke ? await readFile(new URL('../index.html', import.meta.url)) : null;
   const extraAssets = new Map();
   if (storageSmoke) {
     extraAssets.set('/storage-fixture.js', {
@@ -65,6 +67,17 @@ async function run(browserPath) {
       fileURLToPath(new URL('../crates/silent-web/pkg/', import.meta.url));
     await addPackageFiles(packageDirectory,
       '/crates/silent-web/pkg');
+    if (appShellSmoke) {
+      const root = fileURLToPath(new URL('../', import.meta.url));
+      for (const entry of await readdir(root, { withFileTypes: true })) {
+        if (entry.isFile() && /\.(m?js)$/.test(entry.name)) {
+          extraAssets.set(`/${encodeURIComponent(entry.name)}`, {
+            content: await readFile(join(root, entry.name)), type: 'text/javascript',
+          });
+        }
+      }
+      await addPackageFiles(fileURLToPath(new URL('../apps/web/js/', import.meta.url)), '/apps/web/js');
+    }
   }
   const profile = await mkdtemp(join(tmpdir(), 'silent-capture-smoke-'));
   const server = createServer((request, response) => {
@@ -74,7 +87,7 @@ async function run(browserPath) {
       "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob:");
     if (request.url === '/') {
       response.writeHead(200, { 'Content-Type': 'text/html' });
-      response.end('<!doctype html><title>Capture smoke test</title>');
+      response.end(appShell || '<!doctype html><title>Capture smoke test</title>');
     } else if (request.url === '/capture.js') {
       response.writeHead(200, { 'Content-Type': 'text/javascript' });
       response.end(capture);
@@ -146,6 +159,28 @@ async function run(browserPath) {
       }
     }, 'capture test page load');
 
+    if (appShellSmoke) {
+      await evaluate(connection, `(async () => {
+        await app._sessionReady;
+        await Promise.all([
+          _ensureStorageLoaded(), _ensureNotesLoaded(),
+          _ensureFinalNotesPolicy(), _ensureExportsLoaded(),
+          import('./apps/web/js/capture.js'),
+        ]);
+        if (!app.session.ready || !crossOriginIsolated) throw new Error('App shell did not initialize');
+        saveSettings({ ...loadSettings(), model: 'nemotron', qwenModel: 'off',
+          smartQuestions: false, screenshots: false, claudeBridge: false });
+        app._syncSessionConfig();
+        window.appSmokeSamples = 0;
+        TranscriptionManager.prototype.startNemotron = async function() {
+          this.engine = 'nemotron';
+          await this._startAudioCapture(samples => {
+            if (samples.length) window.appSmokeSamples++;
+          });
+        };
+      })()`);
+    }
+
     const first = await evaluate(connection, `(async () => {
       const { CaptureGraph } = await import(location.origin + '/capture.js');
       const state = window.captureSmoke = { firstSamples: 0, secondSamples: 0 };
@@ -194,10 +229,66 @@ async function run(browserPath) {
     assert.equal(second.trackState, 'ended');
     assert.equal(second.staleSamplesIgnored, true);
     console.log(JSON.stringify({ first, second }, null, 2));
+    if (appShellSmoke) {
+      const appRun = await evaluate(connection, `(async () => {
+        if (navigator.onLine) throw new Error('Offline simulation not active');
+        if (loadSettings().claudeBridge || app.bridge.connected) throw new Error('Cloud bridge was enabled');
+        document.getElementById('meetingTitle').value = 'Synthetic offline session';
+        await app.start();
+        if (!app.meetingId || !app.tm?.isRecording) throw new Error('App recording did not start');
+        const track = app.tm.mediaStream.getAudioTracks()[0];
+        await new Promise((resolve, reject) => {
+          const timer = setInterval(() => {
+            if (window.appSmokeSamples > 0) { clearInterval(timer); clearTimeout(timeout); resolve(); }
+          }, 20);
+          const timeout = setTimeout(() => { clearInterval(timer); reject(new Error('No app fake microphone samples')); }, 12000);
+        });
+        await app.handleFinal('After a long debate we have decided to ship on Friday.');
+        await app.stop();
+        const detail = await storage.meetingDetail(app.meetingId);
+        if (track.readyState !== 'ended' || detail.chunks.length !== 1 ||
+          !detail.notes.some(note => note.category === 'decisions')) {
+          throw new Error('Offline app capture, transcript or local note did not persist');
+        }
+        return { offline: !navigator.onLine, samples: window.appSmokeSamples,
+          trackState: track.readyState, chunks: detail.chunks.length, notes: detail.notes.length };
+      })()`);
+      console.log(JSON.stringify({ appRun }, null, 2));
+      console.log('Offline app-shell smoke passed with synthetic capture and injected transcript, not a real ASR model.');
+    }
     if (storageSmoke) {
       await connection.send('Network.emulateNetworkConditions', {
         offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
       });
+    }
+    if (appShellSmoke) {
+      await connection.send('Page.reload');
+      await waitFor(async () => {
+        try {
+          const page = await evaluate(connection,
+            "({ href: location.href, ready: document.readyState, previousState: 'appSmokeSamples' in window })");
+          return page.href === url && page.ready === 'complete' && !page.previousState;
+        } catch (error) {
+          if (/execution context/i.test(error.message)) return false;
+          throw error;
+        }
+      }, 'app shell smoke page reload');
+      const appReload = await evaluate(connection, `(async () => {
+        const meetings = await storage.recentMeetings();
+        const meeting = meetings.find(item => item.title === 'Synthetic offline session');
+        if (!meeting) throw new Error('Offline meeting was not persisted after reload');
+        const detail = await storage.meetingDetail(meeting.id);
+        if (detail.chunks.length !== 1 || detail.chunks[0].text !==
+          'After a long debate we have decided to ship on Friday.' ||
+          !detail.notes.some(note => note.category === 'decisions') ||
+          detail.meeting.endTime === null) {
+          throw new Error('Offline transcript, local note, or stop time was not persisted after reload');
+        }
+        return { meetingCount: meetings.length, chunks: detail.chunks.length, notes: detail.notes.length };
+      })()`);
+      console.log(JSON.stringify({ appReload }, null, 2));
+    }
+    if (storageSmoke && !appShellSmoke) {
       let engines, migration;
       try {
         engines = await evaluate(connection,

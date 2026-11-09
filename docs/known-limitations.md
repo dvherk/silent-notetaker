@@ -29,6 +29,11 @@ Additional outstanding limitations:
   Its normal storage write upgrades a legacy database directly to v4. Do not
   assume an export was offered or saved, or infer universal zero-loss migration
   from the synthetic fixture.
+- The separate migration API's backup serializes known typed fields, not unknown
+  properties on legacy records. No backup importer is provided. The migration
+  reads a snapshot before its write transaction; concurrent edits from another
+  tab are not coordinated or verified. Keep other tabs closed when evaluating
+  the API, and do not treat its export as a complete recovery guarantee.
 - Complete offline behavior, model download and inference, and Windows, Android,
   and iOS device support are not validated here.
 - Model license flags remain unverified; see `current-state.md` and

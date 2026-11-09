@@ -183,9 +183,19 @@ async fn normalize_screenshots(
     for (idx, s) in screenshots.iter().enumerate() {
         // A row already stored as raw bytes needs no rewrite.
         if s.image_encoding != Some(ImageEncoding::Bytes) {
-            let record = screenshot_to_js(s)?;
+            let record: Option<JsValue> = store
+                .get::<JsValue, u32, _>(s.id)
+                .primitive()
+                .map_err(|e| StorageError::Operation(format!("get screenshot: {e:?}")))?
+                .await
+                .map_err(|e| StorageError::Operation(format!("get screenshot await: {e:?}")))?;
+            let record = record.ok_or_else(|| {
+                StorageError::Operation(format!("screenshot {} disappeared during migration", s.id))
+            })?;
+            let record: Object = record.into();
+            normalize_screenshot_record(&record, s)?;
             store
-                .put(&record)
+                .put(&record.into())
                 .build()
                 .map_err(|e| StorageError::Operation(format!("put: {e:?}")))?
                 .await
@@ -204,9 +214,8 @@ async fn normalize_screenshots(
     Ok(())
 }
 
-/// Build the JS object IDB stores for a normalized screenshot: every field from
-/// the schema, with `image` as a `Uint8Array`, plus an `imageEncoding` marker
-/// recording the ORIGINAL encoding.
+/// Update only the image and its encoding marker on the existing record,
+/// preserving fields not represented by the typed snapshot.
 ///
 /// The marker resolves an otherwise-real ambiguity: after normalization every
 /// `image` is a `Uint8Array`, so a reader could not tell a screenshot that was
@@ -217,27 +226,24 @@ async fn normalize_screenshots(
 /// reconstructs the correct `<img src>` (a data-URL string, or an object URL over
 /// the binary). `imageEncoding` is a non-indexed extra property — Dexie/IDB store
 /// it freely without a schema change.
-fn screenshot_to_js(s: &Screenshot) -> Result<JsValue> {
-    let obj = Object::new();
+fn normalize_screenshot_record(obj: &Object, s: &Screenshot) -> Result<()> {
     let set = |key: &str, val: &JsValue| -> Result<()> {
-        Reflect::set(&obj, &JsValue::from_str(key), val)
-            .map(|_| ())
-            .map_err(|e| StorageError::Js(format!("Reflect::set({key}): {e:?}")))
+        if Reflect::set(obj, &JsValue::from_str(key), val)
+            .map_err(|e| StorageError::Js(format!("Reflect::set({key}): {e:?}")))?
+        {
+            Ok(())
+        } else {
+            Err(StorageError::Js(format!(
+                "Reflect::set({key}) returned false"
+            )))
+        }
     };
 
-    // u32 → f64 is lossless (u32 < 2^53); IDB stores numbers as f64.
-    set("id", &JsValue::from_f64(f64::from(s.id)))?;
-    set("meetingId", &JsValue::from_f64(f64::from(s.meeting_id)))?;
-    set("timestamp", &JsValue::from_f64(s.timestamp))?;
     set("image", &Uint8Array::from(s.image.as_slice()).into())?;
-    set("width", &JsValue::from_f64(f64::from(s.width)))?;
-    set("height", &JsValue::from_f64(f64::from(s.height)))?;
-    set("analyzed", &JsValue::from_bool(s.analyzed))?;
-    set("analysis", &JsValue::from_str(&s.analysis))?;
     // Record the ORIGINAL encoding (default `bytes` if a row was already binary).
     let original = s.image_encoding.unwrap_or(ImageEncoding::Bytes);
     set("imageEncoding", &JsValue::from_str(original.as_str()))?;
-    Ok(obj.into())
+    Ok(())
 }
 
 /// Verify the post-migration DB matches the pre-migration snapshot with zero

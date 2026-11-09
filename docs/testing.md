@@ -101,6 +101,11 @@ call it or offer its emitted backup. It also checks the separate, direct
 upgrade used by the storage adapter. Neither path tests real audio, a model, or
 the complete application.
 
+The migration API is not an end-user recovery flow: its typed backup omits
+unrecognized record fields, no importer is provided, and concurrent edits in
+other tabs are not coordinated. The regression fixture checks preservation of
+an additional synthetic screenshot property in the database itself.
+
 For local Rust and Wasm validation, follow `scripts/ci-local.sh` and
 `scripts/build-wasm.sh` after an administrator supplies or authorizes a trusted
 toolchain. The older `browser_idb.rs` fixture-dependent test is a documented

@@ -40,6 +40,7 @@ async function seedLegacyDatabase() {
       images.forEach((image, index) => tx.objectStore('screenshots').add({
         id: index + 1, meetingId: 1, timestamp: 1200 + index,
         image, width: 1, height: 1, analyzed: false,
+        futureMetadata: { label: 'Synthetic extra field', values: [index, true] },
       }));
     };
     request.onsuccess = () => {
@@ -47,6 +48,23 @@ async function seedLegacyDatabase() {
       resolve();
     };
   });
+}
+
+async function readScreenshotExtras() {
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('SilentNotetaker');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction('screenshots').objectStore('screenshots').getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result.map(row => row.futureMetadata));
+    });
+  } finally {
+    db.close();
+  }
 }
 
 async function resetSyntheticDatabase() {
@@ -69,6 +87,7 @@ export async function runMigration() {
 
   window.storageSmokeStage = 'read legacy records';
   const before = summaryValue(await wasm.read_database_summary());
+  const extrasBefore = await readScreenshotExtras();
   check(before.meetingCount === 1 && before.chunkCount === 1 && before.noteCount === 1,
     'Legacy meeting, transcript, or note was not read');
   check(before.screenshotCount === 3, 'Legacy screenshot count was not preserved');
@@ -103,6 +122,8 @@ export async function runMigration() {
   window.storageSmokeStage = 'verify migrated records';
   const after = summaryValue(await wasm.read_database_summary());
   check(JSON.stringify(before) === JSON.stringify(after), 'Legacy snapshot changed after migration');
+  check(JSON.stringify(await readScreenshotExtras()) === JSON.stringify(extrasBefore),
+    'Migration discarded unrecognized synthetic screenshot fields');
   check(localStorage.getItem('silentNotetaker_migrated_v3') === '1', 'Migration marker missing');
   const repeatEvents = [];
   window.storageSmokeStage = 'repeat migration';
@@ -153,6 +174,7 @@ export async function runDirectUpgrade() {
   const wasm = await import(location.origin + '/crates/silent-web/pkg/silent_web.js');
   await wasm.default();
   const before = summaryValue(await wasm.read_database_summary());
+  const extrasBefore = await readScreenshotExtras();
   const { StorageEngine } = await import(location.origin + '/storage-engine.js');
   const storage = new StorageEngine({ pkgUrl: location.origin + '/crates/silent-web/pkg/silent_web.js' });
   await storage.load();
@@ -169,6 +191,8 @@ export async function runDirectUpgrade() {
     JSON.stringify(after.screenshotMeta) === JSON.stringify(before.screenshotMeta) &&
     JSON.stringify(after.screenshotBlobs) === JSON.stringify(before.screenshotBlobs),
   'Direct upgrade changed synthetic legacy records');
+  check(JSON.stringify(await readScreenshotExtras()) === JSON.stringify(extrasBefore),
+    'Direct upgrade discarded unrecognized synthetic screenshot fields');
   const version = await new Promise((resolve, reject) => {
     const request = indexedDB.open('SilentNotetaker');
     request.onerror = () => reject(request.error);

@@ -275,7 +275,7 @@ fn extract_partial_screenshot(raw: &JsValue) -> Result<PartialScreenshot> {
     let analysis = get("analysis")?.as_string().unwrap_or_default();
 
     // The migration writes an `imageEncoding` marker recording the ORIGINAL
-    // encoding (see `migrate::screenshot_to_js`). A POST-migration row is always
+    // encoding (see `migrate::normalize_screenshot_record`). A POST-migration row is always
     // a `Uint8Array`; the marker tells us whether those bytes were originally a
     // base64 data-URL string (recover with `String::from_utf8`), a Blob, or
     // already binary — so a migrated DB round-trips its original encoding exactly.

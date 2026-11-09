@@ -8,8 +8,9 @@
 //!
 //! The backup is a single JSON document with all four tables. Screenshot binary
 //! payloads are base64-encoded into the JSON so the file is portable and
-//! self-contained — it can be re-imported without any external blob store. For a
-//! screenshot already stored as a base64 data-URL string (the current app
+//! self-contained for a future importer; this application does not currently
+//! provide an importer. The typed snapshot does not retain unrecognized fields.
+//! For a screenshot already stored as a base64 data-URL string (the current app
 //! layout), the bytes ARE the UTF-8 of that string, so the backup carries the
 //! exact value `<img src>` reads.
 //!

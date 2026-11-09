@@ -45,7 +45,14 @@ Hosted Linux and local browser evidence:
   tests also passed. The overall run failed at `cargo fmt --all --check` due to
   import ordering; dependent Rust gates were skipped in that run. The server
   audit reported an allowed Tokio unsoundness warning; the generated targeted
-  lockfile update is included for a subsequent validation run.
+  lockfile update was verified in the next run.
+- **Passed:** [Run 42587003743](https://github.com/dvherk/silent-notetaker/actions/runs/42587003743)
+  on commit `ac8bf4e` completed all hosted jobs: Rust format, workspace check,
+  tests and Clippy; JavaScript and browser Wasm tests; boundary and xtask gates;
+  standalone server tests and audit; workspace dependency checks; two
+  byte-identical Wasm builds; and the strengthened synthetic storage fixture.
+  The workspace audit retained the documented pre-existing unmaintained
+  `derivative` warning, RUSTSEC-2024-0388. No model or real microphone was used.
 - **Passed locally:** 49 Node tests and headless Edge using the hosted
   `silent-web` package with a synthetic Dexie-v2 fixture. The fixture checks
   migration and backup event ordering, screenshot encodings and bytes, repeat

@@ -563,7 +563,9 @@ jobs:
 
       # --- Build #1 (reproducible, remapped paths) ---
       - name: "Build wasm (run 1)"
-        run: ./scripts/build-wasm.sh | tee /tmp/wasm-hashes-1.txt
+        run: |
+          set -o pipefail
+          ./scripts/build-wasm.sh | tee /tmp/wasm-hashes-1.txt
 
       - name: Publish built browser packages
         uses: actions/upload-artifact@v4
@@ -603,7 +605,9 @@ jobs:
           rm -rf crates/silent-web/pkg crates/nemotron-asr/pkg
 
       - name: "Build wasm (run 2)"
-        run: ./scripts/build-wasm.sh | tee /tmp/wasm-hashes-2.txt
+        run: |
+          set -o pipefail
+          ./scripts/build-wasm.sh | tee /tmp/wasm-hashes-2.txt
 
       - name: "Assert determinism: run1 == run2"
         run: |

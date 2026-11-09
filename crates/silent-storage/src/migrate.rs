@@ -195,7 +195,7 @@ async fn normalize_screenshots(
             let record: Object = record.into();
             normalize_screenshot_record(&record, s)?;
             store
-                .put(&record.into())
+                .put(&JsValue::from(record))
                 .build()
                 .map_err(|e| StorageError::Operation(format!("put: {e:?}")))?
                 .await

@@ -217,8 +217,16 @@ async function run(browserPath) {
         const stage = await evaluate(connection, 'window.storageSmokeStage || "before direct upgrade"');
         throw new Error(`Storage smoke failed during ${stage}: ${error.message}`, { cause: error });
       }
-      console.log(JSON.stringify({ migration, reload, directUpgrade }, null, 2));
-      console.log('Synthetic IndexedDB migration, reload, and direct legacy upgrade passed.');
+      let fresh;
+      try {
+        fresh = await evaluate(connection,
+          "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runFreshDatabase())");
+      } catch (error) {
+        const stage = await evaluate(connection, 'window.storageSmokeStage || "before fresh database"');
+        throw new Error(`Storage smoke failed during ${stage}: ${error.message}`, { cause: error });
+      }
+      console.log(JSON.stringify({ migration, reload, directUpgrade, fresh }, null, 2));
+      console.log('Synthetic IndexedDB migration, reload, direct upgrade, and fresh database passed.');
     }
     console.log('Browser capture smoke passed with a synthetic microphone; no ASR or real microphone was tested.');
   } finally {

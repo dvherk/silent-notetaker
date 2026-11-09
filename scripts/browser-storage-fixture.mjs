@@ -49,6 +49,16 @@ async function seedLegacyDatabase() {
   });
 }
 
+async function resetSyntheticDatabase() {
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase('SilentNotetaker');
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error('Synthetic database deletion was blocked'));
+    request.onsuccess = () => resolve();
+  });
+  localStorage.removeItem('silentNotetaker_migrated_v3');
+}
+
 export async function runMigration() {
   window.storageSmokeStage = 'seed legacy database';
   localStorage.removeItem('silentNotetaker_migrated_v3');
@@ -137,13 +147,7 @@ export async function verifyAfterReload() {
 
 export async function runDirectUpgrade() {
   window.storageSmokeStage = 'reset synthetic database';
-  await new Promise((resolve, reject) => {
-    const request = indexedDB.deleteDatabase('SilentNotetaker');
-    request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error('Synthetic database deletion was blocked'));
-    request.onsuccess = () => resolve();
-  });
-  localStorage.removeItem('silentNotetaker_migrated_v3');
+  await resetSyntheticDatabase();
   await seedLegacyDatabase();
 
   const wasm = await import(location.origin + '/crates/silent-web/pkg/silent_web.js');
@@ -178,4 +182,34 @@ export async function runDirectUpgrade() {
     'Direct upgrade did not follow the expected unbacked-up v4 path');
   window.storageSmokeStage = 'direct upgrade fixture complete';
   return { meetingId, version, legacyScreenshots: after.screenshotCount, backupFlowInvoked: false };
+}
+
+export async function runFreshDatabase() {
+  window.storageSmokeStage = 'reset for fresh database';
+  await resetSyntheticDatabase();
+  const { StorageEngine } = await import(location.origin + '/storage-engine.js');
+  const storage = new StorageEngine({ pkgUrl: location.origin + '/crates/silent-web/pkg/silent_web.js' });
+  await storage.load();
+  window.storageSmokeStage = 'create fresh database and records';
+  const meetingId = await storage.addMeeting('Synthetic fresh meeting', '', 4000);
+  let writeError;
+  try {
+    await storage.saveFinalNotes(99999, 'Synthetic missing meeting');
+  } catch (error) {
+    writeError = String(error);
+  }
+  check(writeError?.includes('not found'), 'Missing meeting write did not report an error');
+  await storage.addTranscriptChunk(meetingId, 4100, 'Synthetic fresh transcript.');
+  await storage.addNote(meetingId, 'decisions', 'Synthetic fresh decision.', 4100, '');
+  await storage.addScreenshot(meetingId, 4200, 'data:image/jpeg;base64,AQID', 1, 1);
+  await storage.saveSpeakerNames(meetingId, { S1: 'Synthetic speaker' });
+  check((await storage.loadSpeakerNames(meetingId)).S1 === 'Synthetic speaker',
+    'Fresh speaker-name map did not persist');
+  const summary = summaryValue(await storage.readDatabaseSummary());
+  check(summary.meetingCount === 1 && summary.chunkCount === 1 &&
+    summary.noteCount === 1 && summary.screenshotCount === 1 &&
+    summary.meetings[0].id === meetingId,
+  'Fresh database did not preserve synthetic records after the rejected write');
+  window.storageSmokeStage = 'fresh database fixture complete';
+  return { meetingId, rejectedMissingMeetingWrite: true, continuedAfterError: true };
 }

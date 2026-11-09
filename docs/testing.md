@@ -59,7 +59,10 @@ Hosted Linux and local browser evidence:
   migration, writes through `StorageEngine`, local trigger-note generation and
   persistence after reload. A separate direct legacy-to-v4 write through that
   adapter preserves the synthetic records but does not invoke backup. These
-  tests do not establish preservation for every existing user database.
+  tests do not establish preservation for every existing user database. A fresh
+  database fixture also checks local CRUD and speaker-name maps, rejects a write
+  to a missing meeting, and continues writing afterward; it does not simulate
+  quota, permission, or device failures.
 
 The local-core increment is therefore **partial, not a completed Milestone 1**.
 The full acceptance gate still requires a verified in-app backup/migration path,
@@ -121,8 +124,8 @@ browser evidence.
 - Implement and verify an in-app migration and user-accessible backup flow before
   relying on it for legacy data. The current app opens the legacy database at
   v4 on a normal write without invoking the migration API or offering a backup.
-  Exercise representative user-approved legacy fixtures and local write
-  failures as well as a fresh database.
+  Exercise representative user-approved legacy fixtures and additional local
+  write failures, including quota and permission failures.
 - Provide a real microphone, permission to capture test audio, and the required
   cached or downloadable model artifacts. Exercise microphone capture through
   local transcription and note generation, then repeat an appropriate

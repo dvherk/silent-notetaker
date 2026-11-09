@@ -182,6 +182,16 @@ export class WhisperEngine {
     for (const cmd of cmds) {
       if (cmd.cmd === 'transcribe') this._sendChunk(cmd, false);
     }
+    const pendingSamples = this._policy.pendingSamples();
+    if (!Number.isInteger(pendingSamples) || pendingSamples < 0 || pendingSamples > this._mirror.length) {
+      const error = new Error('Whisper audio buffer is out of sync');
+      this._pendingErrors.push(error);
+      this.onStatus?.('Error: ' + error.message, null);
+      throw error;
+    }
+    const consumed = this._mirror.length - pendingSamples;
+    this._mirror = this._mirror.subarray(consumed);
+    this._mirrorBaseAbs += consumed;
   }
 
   _sendChunk(cmd, tail) {

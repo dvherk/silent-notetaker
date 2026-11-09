@@ -20,6 +20,8 @@ Acceptance criteria for this increment:
    microphone; failures and cancelled initialization release acquired resources.
 8. Solo Whisper/Moonshine Stop drains a speech-bearing partial chunk and pending
    transcript callbacks before note flush and meeting close, or reports failure.
+9. Consumed silent Whisper/Moonshine chunks do not accumulate indefinitely in
+   the host-side audio mirror.
 
 Local results on 2026-11-06, with later hosted checks below:
 
@@ -95,6 +97,8 @@ Hosted Linux and local browser evidence:
   not load a model or test recognition quality.
 - **Passed locally:** 77 Node tests with mocked worker and policy coverage for
   tail draining, ordered decode, Stop sequencing, and late transcript isolation.
+- **Passed locally:** 78 Node tests after adding a bounded silence-buffer
+  regression. The real Wasm silence check requires the subsequent hosted build.
 - **Passed locally:** the actual app shell started and stopped with a synthetic
   microphone after its dependencies were preloaded and the network was
   simulated offline. A synthetic transcript injected into the app produced a

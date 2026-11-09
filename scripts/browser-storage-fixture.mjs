@@ -121,6 +121,9 @@ export async function runCoreEngines() {
       saved = true;
     };
     await whisper.load();
+    whisper.feed(new Float32Array(80000));
+    check(whisper._mirror.length === 0 && whisper._mirrorBaseAbs === 80000,
+      'Whisper retained consumed silent audio');
     whisper.feed(new Float32Array(4000).fill(0.5));
     await whisper.flush();
     check(tailSamples === 4000 && saved, 'Whisper did not drain its synthetic tail and callback');

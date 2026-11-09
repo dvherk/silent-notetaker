@@ -178,6 +178,13 @@ impl WasmWhisperStream {
         to_js_value(&commands)
     }
 
+    /// Samples retained by the policy after complete chunks were processed.
+    #[wasm_bindgen(js_name = pendingSamples)]
+    #[must_use]
+    pub fn pending_samples(&self) -> usize {
+        self.policy.pending_samples()
+    }
+
     /// Return the final speech-bearing partial chunk, or JSON null if none exists.
     ///
     /// # Errors

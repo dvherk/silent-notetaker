@@ -27,13 +27,19 @@ function harness(t) {
   const url = 'test:whisper-startup';
   cache.set(url, Promise.resolve({
     WasmWhisperStream: class {
-      constructor() { this.commands = []; this.tail = null; }
-      pushSamples() { return JSON.stringify(this.commands.splice(0)); }
-      flushTail() { const tail = this.tail; this.tail = null; return JSON.stringify(tail); }
+      constructor() { this.commands = []; this.tail = null; this.pending = 0; }
+      pushSamples(samples) {
+        this.pending += samples.length;
+        const commands = this.commands.splice(0);
+        this.pending -= commands.length * 16_000;
+        return JSON.stringify(commands);
+      }
+      pendingSamples() { return this.pending; }
+      flushTail() { const tail = this.tail; this.tail = null; this.pending = 0; return JSON.stringify(tail); }
       onDecoded(text) { return JSON.stringify([{ tag: 'final', payload: { text } }]); }
       requestStop() {}
       drainFinalize() { return 'null'; }
-      reset() {}
+      reset() { this.pending = 0; }
       free() {}
     },
     WasmCorrections: class { apply(text) { return text; } free() {} },
@@ -178,6 +184,20 @@ test('flush sends the partial tail and waits for all transcript callbacks', asyn
   release();
   await flushing;
   assert.equal(engine._pending.size, 0);
+  await engine.stop();
+});
+
+test('consumed silent chunks do not accumulate in the audio mirror', async t => {
+  const { engine, workers } = harness(t);
+  const loading = engine.load();
+  const worker = await waitForWorker(workers);
+  worker.emit({ type: 'ready' });
+  await loading;
+  engine._policy.pushSamples = () => '[]';
+  engine._policy.pendingSamples = () => 7;
+  engine.feed(new Float32Array(16_007));
+  assert.equal(engine._mirror.length, 7);
+  assert.equal(engine._mirrorBaseAbs, 16_000);
   await engine.stop();
 });
 

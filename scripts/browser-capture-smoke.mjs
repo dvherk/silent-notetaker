@@ -180,14 +180,19 @@ async function run(browserPath) {
         window.appSmokeSamples = 0;
         ${whisperWorkerSmoke ? `
           window.appSmokeDecoded = 0;
+          window.appSmokeSession = 1;
+          window.appSmokeWorkers = 0;
           window.Worker = class {
+            constructor() { window.appSmokeWorkers++; }
             postMessage(message) {
               if (message.type === 'init') setTimeout(() => this.onmessage?.({ data: { type: 'ready' } }), 20);
               if (message.type === 'transcribe') setTimeout(() => {
                 window.appSmokeDecoded++;
                 if (message.chunk > 0) window.appSmokeTailSamples = message.audio.length;
                 this.onmessage?.({ data: { type: 'decoded', chunk: message.chunk,
-                  text: message.chunk === 0
+                  text: window.appSmokeSession === 2
+                    ? 'Synthetic second meeting was successfully resumed.'
+                    : message.chunk === 0
                     ? 'After a long debate we have decided to ship on Friday.'
                     : 'The synthetic final follow up will be reviewed tomorrow.' } });
               }, 20);
@@ -260,6 +265,7 @@ async function run(browserPath) {
         document.getElementById('meetingTitle').value = 'Synthetic offline session';
         await app.start();
         if (!app.meetingId || !app.tm?.isRecording) throw new Error('App recording did not start');
+        sessionStorage.setItem('syntheticSmokeFirstMeeting', String(app.meetingId));
         const track = app.tm.mediaStream.getAudioTracks()[0];
         await new Promise((resolve, reject) => {
           const timer = setInterval(() => {
@@ -299,10 +305,31 @@ async function run(browserPath) {
             !detail.chunks.some(chunk => chunk.text === 'The synthetic final follow up will be reviewed tomorrow.')) {
             throw new Error('Final partial Whisper chunk was not persisted before stop');
           }
+          const firstMeetingId = app.meetingId;
+          const firstEngine = app.tm.whisper;
+          window.appSmokeSession = 2;
+          document.getElementById('meetingTitle').value = 'Synthetic continued session';
+          await app.start();
+          if (!app.meetingId || app.meetingId === firstMeetingId || app.tm.whisper !== firstEngine ||
+            window.appSmokeWorkers !== 1 || !app.tm.isRecording) {
+            throw new Error('Continue did not reuse the loaded Whisper engine');
+          }
+          sessionStorage.setItem('syntheticSmokeContinuedMeeting', String(app.meetingId));
+          const resumedTrack = app.tm.mediaStream.getAudioTracks()[0];
+          app.tm.whisper.feed(new Float32Array(4000).fill(0.5));
+          await app.stop();
+          const resumed = await storage.meetingDetail(app.meetingId);
+          const firstAfterResume = await storage.meetingDetail(firstMeetingId);
+          if (resumedTrack.readyState !== 'ended' || resumed.chunks.length !== 1 ||
+            resumed.chunks[0].text !== 'Synthetic second meeting was successfully resumed.' ||
+            firstAfterResume.chunks.length !== 2) {
+            throw new Error('Continue did not preserve separate synthetic meeting transcripts');
+          }
         ` : ''}
         return { offline: !navigator.onLine, samples: window.appSmokeSamples,
           syntheticDecodes: window.appSmokeDecoded || 0,
           tailSamples: window.appSmokeTailSamples || 0,
+          continued: ${whisperWorkerSmoke ? 'true' : 'false'},
           trackState: track.readyState, chunks: detail.chunks.length, notes: detail.notes.length };
       })()`);
       console.log(JSON.stringify({ appRun }, null, 2));
@@ -327,7 +354,8 @@ async function run(browserPath) {
       }, 'app shell smoke page reload');
       const appReload = await evaluate(connection, `(async () => {
         const meetings = await storage.recentMeetings();
-        const meeting = meetings.find(item => item.title === 'Synthetic offline session');
+        const firstId = Number(sessionStorage.getItem('syntheticSmokeFirstMeeting'));
+        const meeting = meetings.find(item => item.id === firstId);
         if (!meeting) throw new Error('Offline meeting was not persisted after reload');
         const detail = await storage.meetingDetail(meeting.id);
         if (detail.chunks.length !== ${whisperWorkerSmoke ? 2 : 1} || detail.chunks[0].text !==
@@ -335,8 +363,19 @@ async function run(browserPath) {
           ${whisperWorkerSmoke ? "detail.chunks[1].text !== 'The synthetic final follow up will be reviewed tomorrow.' ||" : ''}
           !detail.notes.some(note => note.category === 'decisions') ||
           detail.meeting.endTime === null) {
-          throw new Error('Offline transcript, local note, or stop time was not persisted after reload');
+          throw new Error('Offline transcript, local note, or stop time was not persisted after reload: ' +
+            JSON.stringify({ chunks: detail.chunks, notes: detail.notes, endTime: detail.meeting.endTime }));
         }
+        ${whisperWorkerSmoke ? `
+          const resumedId = Number(sessionStorage.getItem('syntheticSmokeContinuedMeeting'));
+          const resumed = meetings.find(item => item.id === resumedId);
+          if (!resumed) throw new Error('Continued meeting was not persisted after reload');
+          const continuedDetail = await storage.meetingDetail(resumed.id);
+          if (continuedDetail.chunks.length !== 1 ||
+            continuedDetail.chunks[0].text !== 'Synthetic second meeting was successfully resumed.') {
+            throw new Error('Continued transcript was not persisted after reload');
+          }
+        ` : ''}
         return { meetingCount: meetings.length, chunks: detail.chunks.length, notes: detail.notes.length };
       })()`);
       console.log(JSON.stringify({ appReload }, null, 2));

@@ -98,7 +98,12 @@ Hosted Linux and local browser evidence:
 - **Passed locally:** 77 Node tests with mocked worker and policy coverage for
   tail draining, ordered decode, Stop sequencing, and late transcript isolation.
 - **Passed locally:** 78 Node tests after adding a bounded silence-buffer
-  regression. The real Wasm silence check requires the subsequent hosted build.
+  regression. [Run 42596075428](https://github.com/dvherk/silent-notetaker/actions/runs/42596075428)
+  on commit `d11ce8c` passed all hosted jobs, including synthetic Stop →
+  Continue and reload with separate meeting records. The hosted Wasm artifact
+  also passed in Edge; a follow-up Edge check fed 100 seconds of synthetic
+  silence in 20 chunks without retaining consumed audio, then drained a
+  4,000-sample synthetic speech tail. No real ASR model was used.
 - **Passed locally:** the actual app shell started and stopped with a synthetic
   microphone after its dependencies were preloaded and the network was
   simulated offline. A synthetic transcript injected into the app produced a

@@ -136,6 +136,20 @@ test('a successful start keeps the existing local capture path and recording UI'
   assert.equal(element('stopBtn').style.display, 'inline-flex');
 });
 
+test('a later start retries a failed session-engine initialization', async () => {
+  const { app, element } = await harness({ succeed: true });
+  app.session.ready = false;
+  let retries = 0;
+  app._ensureSessionReady = async () => {
+    retries++;
+    app.session.ready = true;
+  };
+  await app.start();
+  assert.equal(retries, 1);
+  assert.equal(app.session.state, 'recording');
+  assert.equal(element('stopBtn').style.display, 'inline-flex');
+});
+
 test('a duplicate start does not hide the stop control of an active recording', async () => {
   const { app, element, messages } = await harness();
   app.session.state = 'recording';

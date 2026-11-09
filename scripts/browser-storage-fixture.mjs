@@ -77,6 +77,29 @@ async function resetSyntheticDatabase() {
   localStorage.removeItem('silentNotetaker_migrated_v3');
 }
 
+export async function runCoreEngines() {
+  window.storageSmokeStage = 'load core engines concurrently';
+  const pkgUrl = location.origin + '/crates/silent-web/pkg/silent_web.js';
+  const [{ SessionEngine }, { NotesEngine }, { StorageEngine }] = await Promise.all([
+    import(location.origin + '/session-engine.js'),
+    import(location.origin + '/notes-engine.js'),
+    import(location.origin + '/storage-engine.js'),
+  ]);
+  const session = new SessionEngine({ pkgUrl });
+  const notes = new NotesEngine({ pkgUrl });
+  const storage = new StorageEngine({ pkgUrl });
+  await Promise.all([session.load(), notes.load(), storage.load()]);
+  check(session.ready && notes.ready && storage.ready && session.state === 'idle',
+    'Concurrent core-engine initialization failed');
+  check(session.start('Synthetic session', 4000).effects.some(effect =>
+    effect.tag === 'load_engine_and_capture'), 'Session adapter did not produce the expected start effect');
+  check(notes.analyze('After a long debate we have decided to ship on Friday.')
+    .some(note => note.category === 'decisions'), 'Notes adapter did not produce the expected local note');
+  check(window.__silentWebModulePromises.size === 1,
+    'Concurrent core engines did not share one Wasm initialization');
+  return { sharedModuleCount: window.__silentWebModulePromises.size, notesAdapterReady: true };
+}
+
 export async function runMigration() {
   window.storageSmokeStage = 'seed legacy database';
   localStorage.removeItem('silentNotetaker_migrated_v3');

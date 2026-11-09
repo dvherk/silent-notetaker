@@ -49,7 +49,16 @@ reload remains unverified.
 ## Validation and release gate
 
 The JavaScript regression tests and synthetic-browser capture smoke are
-documented in `testing.md`. Rust/Wasm builds, existing diarization tests, real
-microphone-to-transcript behavior, on-device note generation, storage migration,
-model quality, and mobile support still require the approved toolchain, models,
-and suitable devices. `known-limitations.md` records the remaining gate.
+documented in `testing.md`. Hosted Linux has built the Wasm packages and run the
+existing Rust and browser tests, including synthetic storage fixtures. Real
+microphone-to-transcript behavior, model inference and quality, full-app offline
+behavior, representative legacy data, and mobile support remain unverified.
+Local Rust execution still requires an administrator-approved toolchain.
+`known-limitations.md` records the remaining gate.
+
+The session, notes, storage, and diarization wrappers share one Wasm
+initialization and permit a later retry after failure. The app retries a failed
+session initialization when the user starts recording. If speaker model loading
+fails for a meeting, it avoids retrying on every segment; a new meeting can try
+again. These are recovery behaviors, not proof that model artifacts or speech
+recognition work on a particular device.

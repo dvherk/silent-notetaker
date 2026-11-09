@@ -6,8 +6,9 @@ The local-core changes add cleanup for failed capture setup and cancelled
 permission prompts, recording-start rollback, stop handling when local writes
 fail, visible transcript-write errors, retryable storage module initialization,
 and explicit Claude bridge consent. Screenshot capture now honors its setting.
-Regression tests exercise these paths with mocks. Existing speech and speaker
-contracts and local note-generation code have not been replaced.
+Session, notes, storage and speaker-model loaders can retry after initialization
+errors. Regression tests exercise these paths with mocks. Existing speech and
+speaker contracts and local note-generation code have not been replaced.
 
 **Milestone 1 is not fully validated.** Hosted Linux built both Wasm packages
 and exercised Rust and synthetic browser storage paths; Windows Application

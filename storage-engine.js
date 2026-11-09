@@ -34,28 +34,9 @@
  * => ...)` call site keeps working with the id unchanged.
  */
 
-const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
+import { loadSilentWebModule } from './silent-web-loader.js';
 
-/**
- * Shared, cross-loader module-init promise for the wasm-pack pkg (see
- * session-engine.js for the full rationale): one `import()` + `default()` across
- * ALL engine loaders, keyed by pkg URL, so a concurrent boot-time init never
- * double-initializes the wasm binary and corrupts the heap.
- */
-function _loadModule(pkgUrl) {
-  const w = (typeof window !== 'undefined') ? window : globalThis;
-  const cache = (w.__silentWebModulePromises ||= new Map());
-  let p = cache.get(pkgUrl);
-  if (!p) {
-    p = (async () => {
-      const mod = await import(pkgUrl);
-      await mod.default();   // initialises the wasm binary exactly once
-      return mod;
-    })();
-    cache.set(pkgUrl, p);
-  }
-  return p;
-}
+const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
 
 export class StorageEngine {
   /**
@@ -80,15 +61,7 @@ export class StorageEngine {
     if (this._loadPromise) return this._loadPromise;
 
     this._loadPromise = (async () => {
-      const modulePromise = _loadModule(this.pkgUrl);
-      try {
-        this._mod = await modulePromise;
-      } catch (error) {
-        const w = (typeof window !== 'undefined') ? window : globalThis;
-        const cache = w.__silentWebModulePromises;
-        if (cache && cache.get(this.pkgUrl) === modulePromise) cache.delete(this.pkgUrl);
-        throw error;
-      }
+      this._mod = await loadSilentWebModule(this.pkgUrl);
       this.ready = true;
       console.log('[rust-storage] StorageEngine ready (live CRUD + durable speaker names)');
     })().catch(error => {

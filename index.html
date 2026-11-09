@@ -2526,6 +2526,7 @@ class SpeakerTracker {
       load: () => _ensureDiarzLoaded().then(d => d.load()).catch(() => {}),
     };
     this.available = true;
+    this._speakerLoadFailed = false;
   }
 
   // speakers is a synchronous getter that returns the Rust engine's cached list.
@@ -2539,11 +2540,13 @@ class SpeakerTracker {
    * { id, name, color, isNew } or null.
    */
   async identify(samples) {
+    if (this._speakerLoadFailed) return null;
     try {
       const d = await _ensureDiarzLoaded();
       await d.load();
       return await d.identify(samples);
     } catch (e) {
+      if (!sharedDiarzEngine?.ready) this._speakerLoadFailed = true;
       if (this.available) console.warn('[rust-diarization] identify failed; disabling:', e);
       this.available = false;
       return null;
@@ -4962,6 +4965,15 @@ class App {
     }
   }
 
+  _ensureSessionReady() {
+    if (this.session.ready) return Promise.resolve();
+    if (this._sessionRetry) return this._sessionRetry;
+    this._sessionRetry = this._initSession().finally(() => {
+      this._sessionRetry = null;
+    });
+    return this._sessionRetry;
+  }
+
   // A null-safe synchronous stub matching the SessionEngine surface, used only
   // during the pre-load window so the boot-time timer render never throws. Every
   // command returns an empty outcome; the accessors return the Idle defaults.
@@ -5084,6 +5096,7 @@ class App {
       // derives `canResume` by hand (Appendix A rows 1-2). `_startEpoch` is the
       // numeric start used for the db.meetings record + screenshot stamps.
       await this._sessionReady;
+      if (!this.session.ready) await this._ensureSessionReady();
       if (!this.session.ready) throw new Error('Recording session engine is unavailable.');
       previousState = this.session.state;
       if (previousState !== 'idle' && previousState !== 'stopped') {

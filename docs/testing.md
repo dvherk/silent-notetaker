@@ -14,6 +14,8 @@ Acceptance criteria for this increment:
    opt-in, including for previously saved settings.
 5. Automated regression tests cover the above and existing JavaScript note
    behavior; browser, Wasm, storage and device limitations remain explicit.
+6. Session, notes, storage and speaker-model initialization can recover from
+   transient failures without corrupting shared Wasm initialization.
 
 Local results on 2026-11-06, with later hosted checks below:
 
@@ -72,6 +74,10 @@ Hosted Linux and local browser evidence:
   database fixture also checks local CRUD and speaker-name maps, rejects a write
   to a missing meeting, and continues writing afterward; it does not simulate
   quota, permission, or device failures.
+- **Passed locally:** 59 Node tests after the loader-retry changes. The Edge
+  fixture loads the session, notes, and storage adapters concurrently against a
+  hosted Wasm artifact and verifies that they share one initialized module and
+  that the local trigger-note adapter responds.
 
 The local-core increment is therefore **partial, not a completed Milestone 1**.
 The full acceptance gate still requires a verified in-app backup/migration path,

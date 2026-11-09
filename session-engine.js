@@ -43,43 +43,9 @@
  * session decisions (state, sources, title, timer strings, stop-hook flags).
  */
 
-const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
+import { loadSilentWebModule } from './silent-web-loader.js';
 
-/**
- * Shared, cross-loader module-init promise for the wasm-pack pkg.
- *
- * CRITICAL: `silent_web.js`'s generated `default()` init is only idempotent
- * *after* the first init resolves (its guard is `if (wasm !== undefined)
- * return wasm`, and `wasm` stays `undefined` until init finishes). If two
- * loaders call `default()` CONCURRENTLY — as the App constructor does at boot,
- * where `new NoteEngine()` kicks off `notes-engine.js`'s load at the same time
- * this `SessionEngine` loads — both proceed past the guard and instantiate the
- * module twice. The second init resets the cached memory views and re-runs
- * `__wbindgen_start`, corrupting every object the first init already allocated
- * (witnessed as a "memory access out of bounds" deallocating a `NoteExtractor`
- * and "recursive use … unsafe aliasing" on the session machine).
- *
- * Each engine JS file previously kept its OWN module promise, so the per-file
- * guard could not see a concurrent init in a sibling file. The fix is one
- * promise shared across ALL loaders (`notes-engine.js` and `diarization-engine.js`
- * adopt the same global): `import()` + `default()` run exactly once, and every
- * other loader awaits that same promise. Keyed by pkg URL so an explicit
- * override still gets its own instance.
- */
-function _loadModule(pkgUrl) {
-  const w = (typeof window !== 'undefined') ? window : globalThis;
-  const cache = (w.__silentWebModulePromises ||= new Map());
-  let p = cache.get(pkgUrl);
-  if (!p) {
-    p = (async () => {
-      const mod = await import(pkgUrl);
-      await mod.default();   // initialises the wasm binary exactly once
-      return mod;
-    })();
-    cache.set(pkgUrl, p);
-  }
-  return p;
-}
+const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
 
 export class SessionEngine {
   /**
@@ -105,11 +71,14 @@ export class SessionEngine {
     if (this._loadPromise) return this._loadPromise;
 
     this._loadPromise = (async () => {
-      this._mod = await _loadModule(this.pkgUrl);
+      this._mod = await loadSilentWebModule(this.pkgUrl);
       this._session = new this._mod.WasmSession();
       this.ready = true;
       console.log('[rust-session] SessionEngine ready (SessionMachine: start/stop/continue/new-meeting + sources + timer + stop-hooks)');
-    })();
+    })().catch(error => {
+      this._loadPromise = null;
+      throw error;
+    });
 
     return this._loadPromise;
   }

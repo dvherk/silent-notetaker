@@ -38,6 +38,16 @@ async function run(browserPath) {
       content: await readFile(new URL('../storage-engine.js', import.meta.url)),
       type: 'text/javascript',
     });
+    extraAssets.set('/silent-web-loader.js', {
+      content: await readFile(new URL('../silent-web-loader.js', import.meta.url)),
+      type: 'text/javascript',
+    });
+    for (const name of ['session-engine.js', 'notes-engine.js']) {
+      extraAssets.set(`/${name}`, {
+        content: await readFile(new URL(`../${name}`, import.meta.url)),
+        type: 'text/javascript',
+      });
+    }
     async function addPackageFiles(directory, prefix) {
       for (const entry of await readdir(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
@@ -188,8 +198,10 @@ async function run(browserPath) {
       await connection.send('Network.emulateNetworkConditions', {
         offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
       });
-      let migration;
+      let engines, migration;
       try {
+        engines = await evaluate(connection,
+          "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runCoreEngines())");
         migration = await evaluate(connection,
           "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runMigration())");
       } catch (error) {
@@ -225,7 +237,7 @@ async function run(browserPath) {
         const stage = await evaluate(connection, 'window.storageSmokeStage || "before fresh database"');
         throw new Error(`Storage smoke failed during ${stage}: ${error.message}`, { cause: error });
       }
-      console.log(JSON.stringify({ migration, reload, directUpgrade, fresh }, null, 2));
+      console.log(JSON.stringify({ engines, migration, reload, directUpgrade, fresh }, null, 2));
       console.log('Synthetic IndexedDB migration, reload, direct upgrade, and fresh database passed.');
     }
     console.log('Browser capture smoke passed with a synthetic microphone; no ASR or real microphone was tested.');

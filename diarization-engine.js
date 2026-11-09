@@ -39,6 +39,8 @@
  * (already in the generated CSP connect-src). Vendoring is a later phase.
  */
 
+import { loadSilentWebModule } from './silent-web-loader.js';
+
 const DEFAULT_PKG_URL = new URL('./crates/silent-web/pkg/silent_web.js', import.meta.url).href;
 
 /**
@@ -101,16 +103,7 @@ export class DiarizationEngine {
       // across all engine loaders, or a concurrent boot-time init double-
       // initializes the wasm binary and corrupts the heap. wasm-pack generates a
       // default export (init glue) + named exports for each #[wasm_bindgen] item.
-      const mod = await (() => {
-        const w = (typeof window !== 'undefined') ? window : globalThis;
-        const cache = (w.__silentWebModulePromises ||= new Map());
-        let p = cache.get(this.pkgUrl);
-        if (!p) {
-          p = (async () => { const m = await import(this.pkgUrl); await m.default(); return m; })();
-          cache.set(this.pkgUrl, p);
-        }
-        return p;
-      })();
+      const mod = await loadSilentWebModule(this.pkgUrl);
 
       // Fetch TitaNet ONNX weights.
       this.onStatus?.('Fetching TitaNet ONNX session...');
@@ -134,12 +127,25 @@ export class DiarizationEngine {
       }
 
       // Build the combined Rust diarization object (embedder + tracker).
-      this._wasm = await mod.WasmDiarization.create(onnxBytes, melFbBytes);
+      const wasm = await mod.WasmDiarization.create(onnxBytes, melFbBytes);
+      try {
+        this.onStatus?.('Speaker model ready');
+      } catch (error) {
+        try {
+          wasm.free();
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Speaker model initialization and cleanup failed');
+        }
+        throw error;
+      }
+      this._wasm = wasm;
       this._speakers = [];
       this.ready = true;
-      this.onStatus?.('Speaker model ready');
       console.log('[rust-diarization] WasmDiarization ready (TitaNet + SpeakerTracker)');
-    })();
+    })().catch(error => {
+      this._loadPromise = null;
+      throw error;
+    });
 
     return this._loadPromise;
   }

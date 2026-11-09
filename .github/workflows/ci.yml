@@ -61,8 +61,8 @@ jobs:
           SILENT_BROWSER_BIN: /usr/bin/google-chrome
         run: node scripts/browser-capture-smoke.mjs
 
-  prepare-tokio-refresh:
-    name: "Prepare targeted Tokio lockfile refresh"
+  prepare-server-lock:
+    name: "Prepare standalone server lockfile refresh"
     if: github.ref == 'refs/heads/dvherk-local-core-ci'
     runs-on: ubuntu-latest
     steps:
@@ -71,14 +71,35 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95.0"
-      - name: Refresh Tokio lockfile entry
-        run: cargo update -p tokio --precise 1.53.3
-      - name: Upload proposed lockfile
+      - name: Refresh server Tokio lockfile entry
+        run: cargo update --manifest-path server/Cargo.toml -p tokio --precise 1.53.3
+      - name: Upload proposed server lockfile
         uses: actions/upload-artifact@v4
         with:
-          name: proposed-tokio-lock
-          path: Cargo.lock
+          name: proposed-server-lock
+          path: server/Cargo.lock
           if-no-files-found: error
+
+  server-validation:
+    name: "Standalone server tests and advisory scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - name: Test standalone server
+        run: cargo test --locked --manifest-path server/Cargo.toml
+      - name: Install cargo-audit
+        if: ${{ !cancelled() }}
+        id: install-server-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit standalone server dependencies
+        if: ${{ !cancelled() && steps.install-server-audit.outcome == 'success' }}
+        run: cargo audit --file server/Cargo.lock
 
   core-gates:
     name: "Core gates (fmt / check / test / clippy)"
@@ -113,17 +134,17 @@ jobs:
 
       # --- Check (native + wasm32 for workspace members that target wasm) ---
       - name: cargo check --workspace --all-targets
-        run: cargo check --workspace --all-targets
+        run: cargo check --locked --workspace --all-targets
 
       # --- Test ---
       # golden.rs skips gracefully without models/ (the weights are not committed).
       # browser_smoke.rs is wasm32-only and is skipped here (browser-wasm job handles it).
       - name: cargo test --workspace --all-targets
-        run: cargo test --workspace --all-targets
+        run: cargo test --locked --workspace --all-targets
 
       # --- Clippy ---
       - name: cargo clippy --workspace --all-targets -- -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # ---------------------------------------------------------------------------
   # Job 2: Supply chain — cargo-deny + cargo-audit

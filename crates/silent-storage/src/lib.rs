@@ -49,6 +49,11 @@ pub use silent_core::storage::{
 };
 
 #[cfg(target_arch = "wasm32")]
+mod connection;
+#[cfg(target_arch = "wasm32")]
+pub use connection::DatabaseConnection;
+
+#[cfg(target_arch = "wasm32")]
 pub mod migrate;
 #[cfg(target_arch = "wasm32")]
 pub mod reader;

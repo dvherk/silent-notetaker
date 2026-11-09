@@ -47,7 +47,9 @@ async function run(browserPath) {
         }
       }
     }
-    await addPackageFiles(fileURLToPath(new URL('../crates/silent-web/pkg/', import.meta.url)),
+    const packageDirectory = process.env.SILENT_WEB_PKG_DIR ||
+      fileURLToPath(new URL('../crates/silent-web/pkg/', import.meta.url));
+    await addPackageFiles(packageDirectory,
       '/crates/silent-web/pkg');
   }
   const profile = await mkdtemp(join(tmpdir(), 'silent-capture-smoke-'));
@@ -182,8 +184,14 @@ async function run(browserPath) {
       await connection.send('Network.emulateNetworkConditions', {
         offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
       });
-      const migration = await evaluate(connection,
-        "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runMigration())");
+      let migration;
+      try {
+        migration = await evaluate(connection,
+          "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runMigration())");
+      } catch (error) {
+        const stage = await evaluate(connection, 'window.storageSmokeStage || "before fixture"');
+        throw new Error(`Storage smoke failed during ${stage}: ${error.message}`, { cause: error });
+      }
       await connection.send('Page.reload');
       await waitFor(async () => {
         try {

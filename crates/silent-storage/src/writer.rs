@@ -46,6 +46,7 @@ use silent_core::storage::{
 
 use crate::error::{Result, StorageError};
 use crate::reader::DB_NAME;
+use crate::DatabaseConnection;
 
 /// The four Dexie v2 stores, each with an auto-incrementing `id` key path.
 const AUTOINC_STORES: [&str; 4] = ["meetings", "transcriptChunks", "notes", "screenshots"];
@@ -64,7 +65,7 @@ const AUTOINC_STORES: [&str; 4] = ["meetings", "transcriptChunks", "notes", "scr
 /// # Errors
 ///
 /// Returns [`StorageError::Open`] if the open or upgrade fails.
-pub async fn open_db() -> Result<Database> {
+pub async fn open_db() -> Result<DatabaseConnection> {
     let version: u32 = expected_idb_version(RUST_SCHEMA_VERSION); // 30
 
     Database::open(DB_NAME)
@@ -79,6 +80,7 @@ pub async fn open_db() -> Result<Database> {
         .build()
         .map_err(|e| StorageError::Open(format!("{e:?}")))?
         .await
+        .map(DatabaseConnection::new)
         .map_err(|e| StorageError::Open(format!("{e:?}")))
 }
 

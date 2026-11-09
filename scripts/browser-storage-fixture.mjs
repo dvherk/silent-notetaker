@@ -50,11 +50,14 @@ async function seedLegacyDatabase() {
 }
 
 export async function runMigration() {
+  window.storageSmokeStage = 'seed legacy database';
   localStorage.removeItem('silentNotetaker_migrated_v3');
   await seedLegacyDatabase();
+  window.storageSmokeStage = 'load Wasm package';
   const wasm = await import(location.origin + '/crates/silent-web/pkg/silent_web.js');
   await wasm.default();
 
+  window.storageSmokeStage = 'read legacy records';
   const before = summaryValue(await wasm.read_database_summary());
   check(before.meetingCount === 1 && before.chunkCount === 1 && before.noteCount === 1,
     'Legacy meeting, transcript, or note was not read');
@@ -63,26 +66,31 @@ export async function runMigration() {
     JSON.stringify(['base64', 'blob', 'bytes']), 'Legacy screenshot encodings were not read');
 
   const events = [];
+  window.storageSmokeStage = 'run migration';
   await wasm.migrate_database(json => events.push(JSON.parse(json)));
   const backupIndex = events.findIndex(event => event.tag === 'backup_ready');
   const migrationIndex = events.findIndex(event =>
     event.tag === 'status_changed' && event.payload.status === 'migrating');
   check(backupIndex >= 0 && migrationIndex > backupIndex, 'Backup was not emitted before migration');
   const backupUrl = events[backupIndex].payload.object_url;
+  window.storageSmokeStage = 'read backup';
   const backup = await (await fetch(backupUrl)).json();
   URL.revokeObjectURL(backupUrl);
   check(backup.meetings.length === 1 && backup.transcript_chunks.length === 1 &&
     backup.notes.length === 1 && backup.screenshots.length === 3,
   'Migration backup omitted synthetic fixture records');
 
+  window.storageSmokeStage = 'verify migrated records';
   const after = summaryValue(await wasm.read_database_summary());
   check(JSON.stringify(before) === JSON.stringify(after), 'Legacy snapshot changed after migration');
   check(localStorage.getItem('silentNotetaker_migrated_v3') === '1', 'Migration marker missing');
   const repeatEvents = [];
+  window.storageSmokeStage = 'repeat migration';
   await wasm.migrate_database(json => repeatEvents.push(JSON.parse(json)));
   check(repeatEvents.some(event => event.tag === 'status_changed' &&
     event.payload.status === 'already_migrated'), 'Repeated migration was not a no-op');
 
+  window.storageSmokeStage = 'create new meeting';
   const meetingId = await wasm.add_meeting('Synthetic new meeting', 'Synthetic agenda', 2000);
   const sentence = 'After a long debate we have decided to ship on Friday.';
   await wasm.add_transcript_chunk(meetingId, 2100, sentence);
@@ -94,6 +102,7 @@ export async function runMigration() {
   await wasm.save_final_notes(meetingId, 'Synthetic approved notes');
   await wasm.update_meeting_end(meetingId, 2200, 200);
   notes.free();
+  window.storageSmokeStage = 'migration fixture complete';
   return { legacyScreenshots: before.screenshotCount, migrated: true, meetingId, localNotes: extracted.length };
 }
 

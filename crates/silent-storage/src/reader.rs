@@ -24,6 +24,7 @@ use silent_core::storage::{
 };
 
 use crate::error::{Result, StorageError};
+use crate::DatabaseConnection;
 
 /// The database name the shipping app uses (`new Dexie('SilentNotetaker')`).
 pub const DB_NAME: &str = "SilentNotetaker";
@@ -38,11 +39,12 @@ pub const DB_NAME: &str = "SilentNotetaker";
 /// # Errors
 ///
 /// Returns [`StorageError::Open`] if the database cannot be opened.
-pub async fn open() -> Result<Database> {
+pub async fn open() -> Result<DatabaseConnection> {
     Database::open(DB_NAME)
         .build()
         .map_err(|e| StorageError::Open(format!("{e:?}")))?
         .await
+        .map(DatabaseConnection::new)
         .map_err(|e| StorageError::Open(format!("{e:?}")))
 }
 

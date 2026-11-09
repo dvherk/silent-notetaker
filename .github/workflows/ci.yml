@@ -61,8 +61,8 @@ jobs:
           SILENT_BROWSER_BIN: /usr/bin/google-chrome
         run: node scripts/browser-capture-smoke.mjs
 
-  prepare-lock-refresh:
-    name: "Prepare targeted lockfile refresh"
+  prepare-tokio-refresh:
+    name: "Prepare targeted Tokio lockfile refresh"
     if: github.ref == 'refs/heads/dvherk-local-core-ci'
     runs-on: ubuntu-latest
     steps:
@@ -71,15 +71,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95.0"
-      - name: Refresh affected lockfile entries
-        run: |
-          cargo update -p anyhow --precise 1.0.103
-          cargo update -p webpki-root-certs --precise 1.0.10
-          cargo update -p der --precise 0.8.1
+      - name: Refresh Tokio lockfile entry
+        run: cargo update -p tokio --precise 1.53.3
       - name: Upload proposed lockfile
         uses: actions/upload-artifact@v4
         with:
-          name: proposed-cargo-lock
+          name: proposed-tokio-lock
           path: Cargo.lock
           if-no-files-found: error
 
@@ -566,12 +563,23 @@ jobs:
       - name: "Build wasm (run 1)"
         run: ./scripts/build-wasm.sh | tee /tmp/wasm-hashes-1.txt
 
+      - name: Publish built browser packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-browser-packages
+          path: |
+            crates/silent-web/pkg
+            crates/nemotron-asr/pkg
+          if-no-files-found: error
+
       - name: Set up Node for browser integration
         uses: actions/setup-node@v4
         with:
           node-version: "24"
 
       - name: Exercise synthetic storage migration and local notes
+        id: storage-smoke
+        continue-on-error: true
         env:
           SILENT_BROWSER_BIN: /usr/bin/google-chrome
           SILENT_STORAGE_WASM_SMOKE: "1"
@@ -606,6 +614,12 @@ jobs:
             exit 1
           fi
           echo "Deterministic: both wasm artifacts are byte-identical across two clean builds."
+
+      - name: Enforce browser integration result
+        if: ${{ !cancelled() && steps.storage-smoke.outcome == 'failure' }}
+        run: |
+          echo "::error::Synthetic browser storage integration failed."
+          exit 1
 
       # --- Publish the manifest (PRD R8 requirement) ---
       - name: "Write wasm-hashes.txt manifest"

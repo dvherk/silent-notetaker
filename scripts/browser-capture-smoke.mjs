@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 const browser = process.env.SILENT_BROWSER_BIN;
 if (!browser) {
@@ -29,20 +30,32 @@ async function run(browserPath) {
   const storageSmoke = process.env.SILENT_STORAGE_WASM_SMOKE === '1';
   const extraAssets = new Map();
   if (storageSmoke) {
-    for (const [url, path, type] of [
-      ['/storage-fixture.js', './browser-storage-fixture.mjs', 'text/javascript'],
-      ['/crates/silent-web/pkg/silent_web.js', '../crates/silent-web/pkg/silent_web.js', 'text/javascript'],
-      ['/crates/silent-web/pkg/silent_web_bg.wasm', '../crates/silent-web/pkg/silent_web_bg.wasm', 'application/wasm'],
-    ]) {
-      extraAssets.set(url, { content: await readFile(new URL(path, import.meta.url)), type });
+    extraAssets.set('/storage-fixture.js', {
+      content: await readFile(new URL('./browser-storage-fixture.mjs', import.meta.url)),
+      type: 'text/javascript',
+    });
+    async function addPackageFiles(directory, prefix) {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        const url = `${prefix}/${encodeURIComponent(entry.name)}`;
+        if (entry.isDirectory()) {
+          await addPackageFiles(path, url);
+        } else if (entry.isFile()) {
+          const type = entry.name.endsWith('.wasm') ? 'application/wasm'
+            : /\.(m?js)$/.test(entry.name) ? 'text/javascript' : 'application/octet-stream';
+          extraAssets.set(url, { content: await readFile(path), type });
+        }
+      }
     }
+    await addPackageFiles(fileURLToPath(new URL('../crates/silent-web/pkg/', import.meta.url)),
+      '/crates/silent-web/pkg');
   }
   const profile = await mkdtemp(join(tmpdir(), 'silent-capture-smoke-'));
   const server = createServer((request, response) => {
     response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     response.setHeader('Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self'");
+      "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob:");
     if (request.url === '/') {
       response.writeHead(200, { 'Content-Type': 'text/html' });
       response.end('<!doctype html><title>Capture smoke test</title>');
@@ -54,6 +67,7 @@ async function run(browserPath) {
       response.writeHead(200, { 'Content-Type': asset.type });
       response.end(asset.content);
     } else {
+      console.error(`Browser smoke server: no asset for ${request.url}`);
       response.writeHead(404);
       response.end();
     }
@@ -173,8 +187,9 @@ async function run(browserPath) {
       await connection.send('Page.reload');
       await waitFor(async () => {
         try {
-          const page = await evaluate(connection, '({ href: location.href, ready: document.readyState })');
-          return page.href === url && page.ready === 'complete';
+          const page = await evaluate(connection,
+            "({ href: location.href, ready: document.readyState, previousState: 'captureSmoke' in window })");
+          return page.href === url && page.ready === 'complete' && !page.previousState;
         } catch (error) {
           if (/execution context/i.test(error.message)) return false;
           throw error;

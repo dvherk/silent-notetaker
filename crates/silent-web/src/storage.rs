@@ -19,12 +19,12 @@
 //! - screenshots: [`add_screenshot`], [`mark_screenshot_analyzed`] (row 27 bridge
 //!   analysis), [`count_screenshots`] (bridge summary)
 //! - history: [`recent_meetings`], [`meeting_detail`]
-//! - migration: [`migrate_database`], [`read_database_summary`]
+//! - separate migration API: [`migrate_database`], [`read_database_summary`]
 //! - durable speaker names (Phase-F): [`save_speaker_names`], [`load_speaker_names`]
 //!
-//! The policy — the IndexedDB access, the schema ownership (v3 with the new
-//! `speakerNames` store), the zero-loss migration, the export-backup-before-write
-//! — all lives in `silent-storage`. This module is pure wasm-bindgen glue.
+//! The IndexedDB policy and migration implementation live in `silent-storage`.
+//! The application does not currently invoke this migration API or offer its
+//! backup; normal writes upgrade the legacy database directly.
 //!
 //! # wasm32-only
 //!
@@ -62,7 +62,8 @@ fn start_ms(start_time: f64) -> i64 {
 
 /// Run the Dexie v2 → Rust zero-loss migration. `on_event` is invoked with a
 /// JSON string per [`silent_core::storage::StorageEvent`] — including the
-/// `backup_ready` event the UI wires to an `<a download>` BEFORE any write.
+/// `backup_ready` event emitted before migration writes. The app does not
+/// currently consume this event or offer its backup.
 /// Resolves to the after-migration counts; rejects with a string on failure.
 ///
 /// # Errors

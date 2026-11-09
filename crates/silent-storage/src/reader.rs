@@ -23,8 +23,8 @@ use silent_core::storage::{
     expected_idb_version,
 };
 
-use crate::error::{Result, StorageError};
 use crate::DatabaseConnection;
+use crate::error::{Result, StorageError};
 
 /// The database name the shipping app uses (`new Dexie('SilentNotetaker')`).
 pub const DB_NAME: &str = "SilentNotetaker";

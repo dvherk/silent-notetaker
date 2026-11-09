@@ -4,9 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Silent Notetaker</title>
-  <!-- Storage is Rust/WASM (storage-engine.js → crates/silent-web/pkg). Dexie
-       (unpkg) is removed — IndexedDB access, the zero-loss Dexie v2 migration,
-       and the durable speaker-name map all live in silent-storage. -->
+  <!-- Storage is Rust/WASM (storage-engine.js → crates/silent-web/pkg). The
+       app uses IndexedDB directly through the Rust storage adapter. -->
   <!-- Transformers.js v4 loaded via direct CDN import in startVoxtral() -->
   <style>
     /* ─────────────────────────────────────────
@@ -2258,8 +2257,8 @@ const __WORKER_URL = URL.createObjectURL(__WORKER_BLOB);
 
 /* ════════════════════════════════════════════
    Storage (Rust/WASM) — strangler-fig adapter
-   Policy: crates/silent-storage (IndexedDB access, schema v3, zero-loss Dexie v2
-           migration with export-backup, durable speaker-name map)
+   Policy: crates/silent-storage (IndexedDB access, schema v4, speaker-name map).
+   The separate migration/backup API is not wired into the application.
    Glue:   storage-engine.js → crates/silent-web/pkg/ (shared silent_web.js)
    This REPLACES the Dexie `db` object: every db.meetings/transcriptChunks/notes/
    screenshots call (adds/updates/deletes/reads) now routes through `storage`.

@@ -61,25 +61,6 @@ jobs:
           SILENT_BROWSER_BIN: /usr/bin/google-chrome
         run: node scripts/browser-capture-smoke.mjs
 
-  prepare-server-lock:
-    name: "Prepare standalone server lockfile refresh"
-    if: github.ref == 'refs/heads/dvherk-local-core-ci'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
-      - name: Refresh server Tokio lockfile entry
-        run: cargo update --manifest-path server/Cargo.toml -p tokio --precise 1.53.3
-      - name: Upload proposed server lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: proposed-server-lock
-          path: server/Cargo.lock
-          if-no-files-found: error
-
   server-validation:
     name: "Standalone server tests and advisory scan"
     runs-on: ubuntu-latest

@@ -9,21 +9,26 @@ and explicit Claude bridge consent. Screenshot capture now honors its setting.
 Regression tests exercise these paths with mocks. Existing speech and speaker
 contracts and local note-generation code have not been replaced.
 
-**Milestone 1 is not fully validated.** The Windows Application Control policy
-blocked the pinned Rust executable with OS error 4551, so the generated Wasm
-packages could not be built and the Rust suite, real IndexedDB operations,
-microphone-to-transcript path, and on-device note generation could not be
-tested. Use an organization-approved Rust toolchain, build both Wasm packages,
-run the workspace and browser tests, and exercise capture and local notes on a
-real device before declaring the milestone complete.
+**Milestone 1 is not fully validated.** Hosted Linux built both Wasm packages
+and exercised Rust and synthetic browser storage paths; Windows Application
+Control still blocks local Rust execution with OS error 4551. The actual
+microphone-to-transcript path, model inference, full-app offline behavior and
+on-device end-to-end note generation remain unverified. The in-app legacy
+backup/migration flow is also missing. See `testing.md` for exact runs and
+remaining gates.
 
 Additional outstanding limitations:
 
 - IndexedDB content and temporary audio spools are not application-encrypted;
   retention, complete deletion, key management, and recovery need a design.
 - Existing transcript rows lack a speaker ID; persistence of speaker-attributed
-  history is not established. The legacy migration browser test needs a real
-  fixture rather than its documented skip.
+  history is not established. The older migration browser test's
+  fixture-dependent case is a skip; the separate synthetic fixture tests a
+  bounded set of legacy records, not all user data.
+- The app does not invoke the available Wasm migration API or offer its backup.
+  Its normal storage write upgrades a legacy database directly to v4. Do not
+  assume an export was offered or saved, or infer universal zero-loss migration
+  from the synthetic fixture.
 - Complete offline behavior, model download and inference, and Windows, Android,
   and iOS device support are not validated here.
 - Model license flags remain unverified; see `current-state.md` and

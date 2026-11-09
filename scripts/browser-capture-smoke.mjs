@@ -34,6 +34,10 @@ async function run(browserPath) {
       content: await readFile(new URL('./browser-storage-fixture.mjs', import.meta.url)),
       type: 'text/javascript',
     });
+    extraAssets.set('/storage-engine.js', {
+      content: await readFile(new URL('../storage-engine.js', import.meta.url)),
+      type: 'text/javascript',
+    });
     async function addPackageFiles(directory, prefix) {
       for (const entry of await readdir(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
@@ -205,8 +209,16 @@ async function run(browserPath) {
       }, 'storage smoke page reload');
       const reload = await evaluate(connection,
         "import(location.origin + '/storage-fixture.js').then(fixture => fixture.verifyAfterReload())");
-      console.log(JSON.stringify({ migration, reload }, null, 2));
-      console.log('Synthetic IndexedDB migration, local trigger-note generation, and reload passed.');
+      let directUpgrade;
+      try {
+        directUpgrade = await evaluate(connection,
+          "import(location.origin + '/storage-fixture.js').then(fixture => fixture.runDirectUpgrade())");
+      } catch (error) {
+        const stage = await evaluate(connection, 'window.storageSmokeStage || "before direct upgrade"');
+        throw new Error(`Storage smoke failed during ${stage}: ${error.message}`, { cause: error });
+      }
+      console.log(JSON.stringify({ migration, reload, directUpgrade }, null, 2));
+      console.log('Synthetic IndexedDB migration, reload, and direct legacy upgrade passed.');
     }
     console.log('Browser capture smoke passed with a synthetic microphone; no ASR or real microphone was tested.');
   } finally {

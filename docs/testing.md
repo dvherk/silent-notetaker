@@ -15,7 +15,7 @@ Acceptance criteria for this increment:
 5. Automated regression tests cover the above and existing JavaScript note
    behavior; browser, Wasm, storage and device limitations remain explicit.
 
-Results on 2026-11-06:
+Local results on 2026-11-06, with later hosted checks below:
 
 - **Passed:** 48 Node.js tests, including the existing notes tests and mocked
   local-core regressions, with Node v26.13.0. CI runs these suites on Node 24.
@@ -28,15 +28,38 @@ Results on 2026-11-06:
   model, full-app offline, or IndexedDB integration test.
 - **Passed:** JavaScript module and inline-script syntax checks, `bash -n
   start.sh`, and `git diff --check`.
-- **Blocked:** Rust workspace tests, Wasm builds, and real browser persistence
-  and speech tests. Windows Application Control blocked the pinned `cargo`
+- **Blocked locally:** Windows Application Control blocked the pinned `cargo`
   executable with OS error 4551. No policy bypass was attempted.
 
+Hosted Linux and local browser evidence:
+
+- [Run 42585275292](https://github.com/dvherk/silent-notetaker/actions/runs/42585275292)
+  passed the Rust workspace checks, tests and Clippy; JavaScript tests; browser
+  Wasm tests; boundary and xtask gates; and dependency checks. Its new synthetic
+  IndexedDB fixture timed out opening the upgraded database, so the overall
+  Wasm integration gate failed.
+- [Run 42586157800](https://github.com/dvherk/silent-notetaker/actions/runs/42586157800)
+  built both Wasm packages twice with byte-identical results. Its synthetic
+  migration, backup readback, local trigger-note generation, and reload passed
+  after fixing the connection lifetime. Browser Wasm and standalone server
+  tests also passed. The overall run failed at `cargo fmt --all --check` due to
+  import ordering; dependent Rust gates were skipped in that run. The server
+  audit reported an allowed Tokio unsoundness warning; the generated targeted
+  lockfile update is included for a subsequent validation run.
+- **Passed locally:** 49 Node tests and headless Edge using the hosted
+  `silent-web` package with a synthetic Dexie-v2 fixture. The fixture checks
+  migration and backup event ordering, screenshot encodings and bytes, repeat
+  migration, writes through `StorageEngine`, local trigger-note generation and
+  persistence after reload. A separate direct legacy-to-v4 write through that
+  adapter preserves the synthetic records but does not invoke backup. These
+  tests do not establish preservation for every existing user database.
+
 The local-core increment is therefore **partial, not a completed Milestone 1**.
-The full acceptance gate additionally requires an approved Rust toolchain, both
-generated Wasm packages, Rust and browser tests with real IndexedDB fixtures,
-and a real microphone-to-local-transcript and local-note-generation exercise.
-Android and iOS validation require separate devices.
+The full acceptance gate still requires a verified in-app backup/migration path,
+an approved local Rust toolchain for local development, and a real
+microphone-to-local-transcript and local-note-generation exercise. Full-app
+offline behavior is unverified. Android and iOS validation require separate
+devices.
 
 Run the JavaScript suites from PowerShell:
 
@@ -54,13 +77,25 @@ node scripts\browser-capture-smoke.mjs
 
 The harness starts a temporary loopback server and isolated browser profile,
 uses the browser's fake-media flags rather than a physical microphone, and closes
-both afterward. It exercises only the capture module; model loading,
-transcription, notes, and persistence are outside its scope.
+both afterward. By default it exercises only capture. To additionally exercise
+the synthetic storage fixture with an already-built `silent-web` package:
 
-For the remaining Rust and Wasm validation, follow `scripts/ci-local.sh` and
+```powershell
+$env:SILENT_STORAGE_WASM_SMOKE = '1'
+$env:SILENT_WEB_PKG_DIR = '<path to silent-web package directory>'
+node scripts\browser-capture-smoke.mjs
+```
+
+The fixture directly calls the Wasm migration API; the application does not
+call it or offer its emitted backup. It also checks the separate, direct
+upgrade used by the storage adapter. Neither path tests real audio, a model, or
+the complete application.
+
+For local Rust and Wasm validation, follow `scripts/ci-local.sh` and
 `scripts/build-wasm.sh` after an administrator supplies or authorizes a trusted
-toolchain. The existing migration test's fixture-dependent case is a documented
-skip, not proof of migration correctness.
+toolchain. The older `browser_idb.rs` fixture-dependent test is a documented
+skip, not migration proof; the separate synthetic fixture above supplies bounded
+browser evidence.
 
 ### Approved environment required to finish Milestone 1
 
@@ -76,9 +111,11 @@ skip, not proof of migration correctness.
   workspace tests and browser Wasm tests with a matching Chrome/ChromeDriver.
   The existing shell scripts assume Unix-style tools and are not demonstrated
   to work unchanged in native Windows PowerShell.
-- Provide a populated legacy IndexedDB migration fixture and assert the
-  read/migrate/read-back result; the current fixture-dependent test is a skip.
-  Test a fresh database and local write failures as well.
+- Implement and verify an in-app migration and user-accessible backup flow before
+  relying on it for legacy data. The current app opens the legacy database at
+  v4 on a normal write without invoking the migration API or offering a backup.
+  Exercise representative user-approved legacy fixtures and local write
+  failures as well as a fresh database.
 - Provide a real microphone, permission to capture test audio, and the required
   cached or downloadable model artifacts. Exercise microphone capture through
   local transcription and note generation, then repeat an appropriate

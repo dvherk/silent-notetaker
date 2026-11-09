@@ -18,18 +18,14 @@
  *       notes:            addNote / updateNoteText / updateNoteCategory / deleteNote
  *       screenshots:      addScreenshot / markScreenshotAnalyzed / countScreenshots
  *       history:          recentMeetings / meetingDetail
- *   - MIGRATION: migrateDatabase (Dexie v2 → Rust zero-loss, export-backup first).
  *   - DURABLE SPEAKER NAMES: saveSpeakerNames / loadSpeakerNames (Phase-F).
  *
- * The Rust core owns the law: the IndexedDB access, the schema ownership (it now
- * opens the DB at v3 and adds the `speakerNames` store), the zero-loss migration,
- * and the export-backup-before-write guarantee. index.html keeps the hands: it
- * renders, and on migration it wires the `backup_ready` event to its existing
- * download path so the user saves a backup BEFORE any migration write.
+ * The Rust core owns IndexedDB access and the current schema. A separate Wasm
+ * migration API can emit a backup, but this wrapper and index.html do not call it
+ * or offer that backup. A live write upgrades a legacy database directly.
  *
- * Privacy: this is the ONLY persistence surface; nothing leaves the browser. The
- * Dexie unpkg `<script>` is removed from the app — which also shrinks the CSP's
- * connect-src (a K2 follow-up: `https://unpkg.com` is no longer needed).
+ * IndexedDB operations here stay in the browser. Other application paths can
+ * send data when explicitly enabled. The Dexie unpkg `<script>` is removed.
  *
  * # ids
  *
@@ -94,7 +90,7 @@ export class StorageEngine {
         throw error;
       }
       this.ready = true;
-      console.log('[rust-storage] StorageEngine ready (live CRUD + migration + durable speaker names)');
+      console.log('[rust-storage] StorageEngine ready (live CRUD + durable speaker names)');
     })().catch(error => {
       this._loadPromise = null;
       throw error;

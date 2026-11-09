@@ -64,6 +64,11 @@ export async function runMigration() {
   check(before.screenshotCount === 3, 'Legacy screenshot count was not preserved');
   check(JSON.stringify(before.screenshotMeta.map(item => item.encoding)) ===
     JSON.stringify(['base64', 'blob', 'bytes']), 'Legacy screenshot encodings were not read');
+  check(JSON.stringify(before.screenshotBlobs) === JSON.stringify([
+    Array.from(new TextEncoder().encode('data:image/jpeg;base64,AQID')),
+    [4, 5, 6],
+    [7, 8, 9],
+  ]), 'Legacy screenshot bytes were not read correctly');
 
   const events = [];
   window.storageSmokeStage = 'run migration';
@@ -79,6 +84,11 @@ export async function runMigration() {
   check(backup.meetings.length === 1 && backup.transcript_chunks.length === 1 &&
     backup.notes.length === 1 && backup.screenshots.length === 3,
   'Migration backup omitted synthetic fixture records');
+  check(JSON.stringify(backup.screenshots.map(item => item.original_encoding)) ===
+    JSON.stringify(['base64', 'blob', 'bytes']) &&
+    JSON.stringify(backup.screenshots.map(item => item.image_base64)) ===
+    JSON.stringify([btoa('data:image/jpeg;base64,AQID'), 'BAUG', 'BwgJ']),
+  'Migration backup changed synthetic screenshot bytes or encodings');
 
   window.storageSmokeStage = 'verify migrated records';
   const after = summaryValue(await wasm.read_database_summary());
@@ -90,17 +100,20 @@ export async function runMigration() {
   check(repeatEvents.some(event => event.tag === 'status_changed' &&
     event.payload.status === 'already_migrated'), 'Repeated migration was not a no-op');
 
+  const { StorageEngine } = await import(location.origin + '/storage-engine.js');
+  const storage = new StorageEngine({ pkgUrl: location.origin + '/crates/silent-web/pkg/silent_web.js' });
+  await storage.load();
   window.storageSmokeStage = 'create new meeting';
-  const meetingId = await wasm.add_meeting('Synthetic new meeting', 'Synthetic agenda', 2000);
+  const meetingId = await storage.addMeeting('Synthetic new meeting', 'Synthetic agenda', 2000);
   const sentence = 'After a long debate we have decided to ship on Friday.';
-  await wasm.add_transcript_chunk(meetingId, 2100, sentence);
+  await storage.addTranscriptChunk(meetingId, 2100, sentence);
   const notes = new wasm.WasmNoteEngine();
   const extracted = JSON.parse(notes.analyze(sentence));
   check(extracted.length === 1 && extracted[0].category === 'decisions',
     'Local trigger-note generation failed for the synthetic transcript');
-  await wasm.add_note(meetingId, extracted[0].category, extracted[0].text, 2100, extracted[0].triggerPhrase);
-  await wasm.save_final_notes(meetingId, 'Synthetic approved notes');
-  await wasm.update_meeting_end(meetingId, 2200, 200);
+  await storage.addNote(meetingId, extracted[0].category, extracted[0].text, 2100, extracted[0].triggerPhrase);
+  await storage.saveFinalNotes(meetingId, 'Synthetic approved notes');
+  await storage.updateMeetingEnd(meetingId, 2200, 200);
   notes.free();
   window.storageSmokeStage = 'migration fixture complete';
   return { legacyScreenshots: before.screenshotCount, migrated: true, meetingId, localNotes: extracted.length };
@@ -120,4 +133,49 @@ export async function verifyAfterReload() {
   check(summary.notes.some(note => note.meetingId === meeting.id && note.category === 'decisions'),
     'The locally generated synthetic note did not persist');
   return { meetingCount: summary.meetingCount, noteCount: summary.noteCount, reloaded: true };
+}
+
+export async function runDirectUpgrade() {
+  window.storageSmokeStage = 'reset synthetic database';
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase('SilentNotetaker');
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error('Synthetic database deletion was blocked'));
+    request.onsuccess = () => resolve();
+  });
+  localStorage.removeItem('silentNotetaker_migrated_v3');
+  await seedLegacyDatabase();
+
+  const wasm = await import(location.origin + '/crates/silent-web/pkg/silent_web.js');
+  await wasm.default();
+  const before = summaryValue(await wasm.read_database_summary());
+  const { StorageEngine } = await import(location.origin + '/storage-engine.js');
+  const storage = new StorageEngine({ pkgUrl: location.origin + '/crates/silent-web/pkg/silent_web.js' });
+  await storage.load();
+  window.storageSmokeStage = 'direct legacy upgrade and write';
+  const meetingId = await storage.addMeeting('Synthetic direct upgrade', '', 3000);
+  const after = summaryValue(await wasm.read_database_summary());
+  check(after.meetingCount === before.meetingCount + 1 &&
+    after.chunkCount === before.chunkCount && after.noteCount === before.noteCount &&
+    after.screenshotCount === before.screenshotCount,
+  'Direct upgrade changed synthetic legacy record counts');
+  check(JSON.stringify(after.meetings.find(item => item.id === 1)) === JSON.stringify(before.meetings[0]) &&
+    JSON.stringify(after.transcriptChunks) === JSON.stringify(before.transcriptChunks) &&
+    JSON.stringify(after.notes) === JSON.stringify(before.notes) &&
+    JSON.stringify(after.screenshotMeta) === JSON.stringify(before.screenshotMeta) &&
+    JSON.stringify(after.screenshotBlobs) === JSON.stringify(before.screenshotBlobs),
+  'Direct upgrade changed synthetic legacy records');
+  const version = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('SilentNotetaker');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const version = request.result.version;
+      request.result.close();
+      resolve(version);
+    };
+  });
+  check(version === 40 && !localStorage.getItem('silentNotetaker_migrated_v3'),
+    'Direct upgrade did not follow the expected unbacked-up v4 path');
+  window.storageSmokeStage = 'direct upgrade fixture complete';
+  return { meetingId, version, legacyScreenshots: after.screenshotCount, backupFlowInvoked: false };
 }

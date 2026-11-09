@@ -10,26 +10,25 @@
 //! `storage` module exposes to the glue (`storage-engine.js`). When this is
 //! wired, the Dexie `<script>` is removed from `index.html` entirely.
 //!
-//! # Schema ownership (v3)
+//! # Schema ownership (v4)
 //!
 //! Dexie created the DB at IDB version 20 (`db.version(2) × 10`). Now that Rust
-//! owns the DB it opens at version 30 ([`silent_core::storage::RUST_SCHEMA_VERSION`]
+//! owns the DB it opens at version 40 ([`silent_core::storage::RUST_SCHEMA_VERSION`]
 //! `× 10`) and, in the upgrade callback, ensures every store exists:
 //!
 //! - the four Dexie v2 stores (`meetings`, `transcriptChunks`, `notes`,
 //!   `screenshots`) are created with `autoIncrement` `++id` ONLY if absent (a
 //!   fresh install with no prior Dexie DB), and left untouched on an existing DB
-//!   — so opening a v2 database at v3 is non-destructive (the migration relies on
-//!   this).
+//!   — so opening a v2 database preserves the existing stores.
 //! - the new `speakerNames` store ([`silent_core::storage::SPEAKER_NAMES_STORE`])
 //!   is created keyed on `meetingId` (NOT auto-increment) for the durable
 //!   per-meeting rename map.
+//! - the `extensionGrants` store is keyed on `extension`.
 //!
 //! The Dexie ×10 rule still holds for the migration pre-flight: a never-migrated
-//! v2 DB is at 20; this open bumps it to 30 the first time it is touched. The
-//! migration (`crate::migrate`) opens version-less and asserts 20 BEFORE this
-//! writer ever bumps it, so the ordering (migrate-then-write) is preserved by the
-//! glue (it runs `migrate_database()` before any live write on first load).
+//! v2 DB is at 20; this open bumps it to 40 the first time it is touched. The
+//! separate migration (`crate::migrate`) expects 20 before the writer opens the
+//! DB. The application does not currently invoke the migration or backup flow.
 
 use std::collections::BTreeMap;
 
@@ -44,9 +43,9 @@ use silent_core::storage::{
     expected_idb_version,
 };
 
+use crate::DatabaseConnection;
 use crate::error::{Result, StorageError};
 use crate::reader::DB_NAME;
-use crate::DatabaseConnection;
 
 /// The four Dexie v2 stores, each with an auto-incrementing `id` key path.
 const AUTOINC_STORES: [&str; 4] = ["meetings", "transcriptChunks", "notes", "screenshots"];
@@ -66,7 +65,7 @@ const AUTOINC_STORES: [&str; 4] = ["meetings", "transcriptChunks", "notes", "scr
 ///
 /// Returns [`StorageError::Open`] if the open or upgrade fails.
 pub async fn open_db() -> Result<DatabaseConnection> {
-    let version: u32 = expected_idb_version(RUST_SCHEMA_VERSION); // 30
+    let version: u32 = expected_idb_version(RUST_SCHEMA_VERSION);
 
     Database::open(DB_NAME)
         .with_version(version)
